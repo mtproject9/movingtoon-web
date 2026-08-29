@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/*
+ * "Vivid & Crisp Modern Studio" 테마.
+ * Tailwind v4는 CSS 기반 설정이라 tailwind.config.ts가 없다. 이전 리디자인에서는
+ * rose/slate/emerald/indigo 팔레트 자체를 톤 다운된 값으로 --theme에서 덮어썼지만,
+ * 이번 방향은 정반대(파스텔 제거, 또렷한 대비)라 Tailwind 기본 팔레트가 이미
+ * 요구 사항과 거의 정확히 일치한다 — 기본 rose-500(#f43f5e)/rose-600(#e11d48),
+ * slate-900(#0f172a)/slate-800(#1e293b)/slate-600(#475569)/slate-200(#e2e8f0) 등.
+ * 그래서 커스텀 컬러 토큰은 모두 제거해 기본 팔레트로 되돌리고, 배경색만 지정한다.
+ * 보조 포인트(인디고)는 새 토큰을 만들지 않고 실제 사용처(StatusBadge)에서
+ * Tailwind 기본 indigo-* 클래스를 바로 쓴다.
+ * "에셋 스튜디오" 화면(prompts/page.tsx, CutStudioRow 등)도 이전에는 하드코딩된
+ * hex 값으로 이 사이트 전역 테마와 별개로 크림 파스텔을 유지했지만, 이번 요청 범위에
+ * "에셋 슬롯"이 명시되어 있어 해당 컴포넌트들도 slate/rose 유틸리티 클래스로
+ * 맞춰 전체 사이트와 동일한 비비드 테마를 따르도록 변경했다.
+ */
+:root {
+  --background: #f8f9fa;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-logo: var(--font-logo);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
