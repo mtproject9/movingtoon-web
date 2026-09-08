@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Clapperboard, X } from "lucide-react";
+import { Camera, Clapperboard, X } from "lucide-react";
 import type { Series } from "@/lib/types";
 import { compressImageToDataUrl } from "@/lib/images";
 
@@ -11,6 +11,7 @@ const EMPTY_FORM: SeriesFormValues = {
   title: "",
   logline: "",
   thumbnail: "",
+  customStylePresets: [],
 };
 
 export default function SeriesModal({
@@ -67,7 +68,10 @@ export default function SeriesModal({
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100">
+            <label
+              title="썸네일 이미지 변경"
+              className="group relative flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-slate-100"
+            >
               {form.thumbnail ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -78,29 +82,29 @@ export default function SeriesModal({
               ) : (
                 <Clapperboard className="h-7 w-7 text-slate-300" />
               )}
-            </div>
-            <label className="flex-1">
-              <span className="mb-1 block text-xs font-semibold text-slate-500">썸네일</span>
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-900/0 transition-colors group-hover:bg-slate-900/50">
+                <Camera className="h-5 w-5 text-white opacity-0 transition-opacity group-hover:opacity-100" />
+              </div>
               <input
                 type="file"
                 accept="image/*"
                 onChange={handleThumbnailChange}
-                className="block w-full text-xs text-slate-500 file:mr-2 file:rounded-full file:border-0 file:bg-rose-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-rose-600 hover:file:bg-rose-100"
+                className="hidden"
               />
-              {thumbnailError && <p className="mt-1 text-xs text-red-500">{thumbnailError}</p>}
+            </label>
+
+            <label className="flex flex-1 flex-col gap-1">
+              <span className="text-xs font-semibold text-slate-500">제목</span>
+              <input
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+                placeholder="예: 재벌집 계약직 로맨스"
+                required
+                className="w-full rounded-lg border border-slate-200 p-2 text-sm focus:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-100"
+              />
             </label>
           </div>
-
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-slate-500">제목</span>
-            <input
-              value={form.title}
-              onChange={(e) => set("title", e.target.value)}
-              placeholder="예: 재벌집 계약직 로맨스"
-              required
-              className="w-full rounded-lg border border-slate-200 p-2 text-sm focus:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-100"
-            />
-          </label>
+          {thumbnailError && <p className="-mt-2 text-xs text-red-500">{thumbnailError}</p>}
 
           <label className="flex flex-col gap-1">
             <span className="text-xs font-semibold text-slate-500">로그라인</span>

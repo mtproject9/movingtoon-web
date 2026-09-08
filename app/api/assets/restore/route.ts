@@ -1,11 +1,9 @@
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
+import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
-import { resolvePublicPath } from "@/lib/localAssetStorage";
 
-// 백업 복원 전용. /api/assets/upload는 항상 새 파일명을 만들어 저장하지만, 백업
-// 안에는 이미 CutAsset.fileUrl로 참조되고 있는 "정확한 원래 경로"가 있으므로
-// 그 경로 그대로 다시 써야 참조 무결성이 유지된다(파일명이 바뀌면 안 됨).
+// 백업 복원 전용. 예전 형식(로컬 파일 경로) 백업을 새 저장소(Vercel Blob)로 복원할 때
+// 쓰인다. path를 그대로 blob 키로 써서 새 공개 URL을 돌려준다 — 이제는 URL 자체가
+// CutAsset.fileUrl로 저장되므로, 예전처럼 "정확히 같은 경로"를 지킬 필요는 없다.
 export async function POST(request: Request) {
   let form: FormData;
   try {
@@ -17,19 +15,19 @@ export async function POST(request: Request) {
   const targetPath = form.get("path");
   const file = form.get("file");
 
-  if (typeof targetPath !== "string") {
+  if (typeof targetPath !== "string" || !targetPath.trim()) {
     return NextResponse.json({ error: "path가 필요합니다." }, { status: 400 });
-  }
-  const absolute = resolvePublicPath(targetPath);
-  if (!absolute) {
-    return NextResponse.json({ error: "잘못된 경로입니다." }, { status: 400 });
   }
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "복원할 파일이 없습니다." }, { status: 400 });
   }
 
-  await mkdir(path.dirname(absolute), { recursive: true });
-  await writeFile(absolute, Buffer.from(await file.arrayBuffer()));
+  const key = targetPath.replace(/^\/+/, "");
+  const result = await put(key, file, {
+    access: "public",
+    addRandomSuffix: false,
+    token: process.env.PUBLIC_BLOB_READ_WRITE_TOKEN,
+  });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, fileUrl: result.url });
 }

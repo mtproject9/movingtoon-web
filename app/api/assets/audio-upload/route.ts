@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { makeFileId, resolveSafeEpisodeId, saveEpisodeFile } from "@/lib/localAssetStorage";
+import { makeFileId, sanitizeSegment, uploadToBlob } from "@/lib/blobStorage";
 
 // 대사 보이스 파일(.mp3/.wav/.m4a) 전용 업로드 라우트. 저장 로직 자체는
-// /api/assets/upload와 같은 lib/localAssetStorage를 공유하지만, 오디오가 아닌
+// /api/assets/upload와 같은 lib/blobStorage를 공유하지만, 오디오가 아닌
 // 파일이 실수로 컷의 오디오 슬롯에 들어가지 않도록 확장자/MIME을 여기서 검증한다.
-// 삭제는 /api/assets/upload의 DELETE가 경로 기반으로 이미 타입 구분 없이 처리한다.
-// 무손실 원본(.wav)은 수백 MB까지도 흔해 4K 이미지와 달리 용량 상한을 두지 않는다 —
-// Route Handler는 Server Action과 달리 기본 바디 크기 제한이 없어 별도 설정도 필요 없다.
+// 무손실 원본(.wav)은 수백 MB까지도 흔해 4K 이미지와 달리 용량 상한을 두지 않는다.
 const ALLOWED_EXTENSIONS = new Set(["mp3", "wav", "m4a"]);
 const ALLOWED_MIME_PREFIXES = ["audio/"];
 
@@ -30,7 +28,7 @@ export async function POST(request: Request) {
   if (typeof episodeId !== "string" || !episodeId.trim()) {
     return NextResponse.json({ error: "episodeId가 필요합니다." }, { status: 400 });
   }
-  const safeEpisodeId = resolveSafeEpisodeId(episodeId);
+  const safeEpisodeId = sanitizeSegment(episodeId);
   if (!safeEpisodeId) {
     return NextResponse.json({ error: "잘못된 episodeId입니다." }, { status: 400 });
   }
@@ -45,7 +43,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const fileUrl = await saveEpisodeFile(safeEpisodeId, makeFileId(), file, "", "mp3");
+  const fileUrl = await uploadToBlob(`uploads/${safeEpisodeId}`, makeFileId(), file, file.name, "", "mp3");
 
   return NextResponse.json({ fileUrl, fileName: file.name });
 }

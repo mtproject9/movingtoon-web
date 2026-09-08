@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import type { Character, Cut, CutAsset, Episode, Series, TrashEntry } from "./types";
+import type { BoardImage, Character, Cut, CutAsset, Episode, Series, TrashEntry } from "./types";
 import {
   MAX_GALLERY_IMAGES,
   addGalleryImages,
@@ -11,14 +11,56 @@ import { addTrashEntries, listTrashEntries } from "./trashDb";
 import { restoreAssetFile } from "./assetUpload";
 
 const BACKUP_VERSION = 1;
-const SERIES_KEY = "movingtoon:series";
-const EPISODES_KEY = "movingtoon:episodes";
-const CHARACTERS_KEY = "movingtoon:characters";
+
+interface EpisodeAux {
+  cuts: Cut[];
+  assets: CutAsset[];
+  stylePreset: string | null;
+  board: BoardImage[];
+}
+
+// 시리즈/회차/캐릭터와 회차별 cuts/assets/stylePreset/board는 이제 서버(Postgres)에
+// 있으므로 localStorage 대신 이 API들을 거쳐 읽고 쓴다. 캐릭터 참조 이미지 갤러리와
+// 휴지통은 여전히 브라우저 IndexedDB에 있어 기존 로직을 그대로 쓴다.
+async function fetchBootstrap(): Promise<{ series: Series[]; episodes: Episode[]; characters: Character[] }> {
+  const res = await fetch("/api/db/bootstrap");
+  if (!res.ok) return { series: [], episodes: [], characters: [] };
+  return res.json();
+}
+
+async function fetchEpisodeAux(episodeId: string): Promise<EpisodeAux> {
+  const res = await fetch(`/api/db/episodes/${episodeId}`);
+  if (!res.ok) return { cuts: [], assets: [], stylePreset: null, board: [] };
+  const data = (await res.json()) as EpisodeAux;
+  return {
+    cuts: data.cuts ?? [],
+    assets: data.assets ?? [],
+    stylePreset: data.stylePreset ?? null,
+    board: data.board ?? [],
+  };
+}
+
+async function postJson(url: string, body: unknown): Promise<void> {
+  await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function patchJson(url: string, body: unknown): Promise<void> {
+  await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
 
 interface EpisodeBackupData {
   cuts: Cut[];
   assets: CutAsset[];
   stylePreset: string | null;
+  board: BoardImage[];
 }
 
 interface GalleryIndexEntry {
@@ -43,19 +85,6 @@ export interface BackupData {
 
 export type ImportMode = "overwrite" | "merge";
 export type ProgressCallback = (phase: string, percent: number) => void;
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(key: string, value: unknown) {
-  window.localStorage.setItem(key, JSON.stringify(value));
-}
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -110,7 +139,7 @@ async function hydrateBlobsFromZip(value: unknown, zip: JSZip): Promise<unknown>
 // 훑어 "/uploads/"로 시작하는 문자열을 전부 모은다 — 나중에 새 필드가 추가돼도
 // 자동으로 백업 대상에 포함된다.
 function collectUploadPaths(value: unknown, into: Set<string>) {
-  if (typeof value === "string" && value.startsWith("/uploads/")) {
+  if (typeof value === "string" && value.includes("/uploads/")) {
     into.add(value);
   } else if (Array.isArray(value)) {
     value.forEach((item) => collectUploadPaths(item, into));
@@ -120,15 +149,42 @@ function collectUploadPaths(value: unknown, into: Set<string>) {
   }
 }
 
+// Vercel Blob 마이그레이션 이전에는 fileUrl이 "/uploads/..." 형태의 상대 경로였지만
+// 지금은 "https://<store>.public.blob.vercel-storage.com/uploads/..." 형태의 완전한
+// URL이다. zip 안에는 경로 부분만 "uploads/..."로 저장해야 restoreUploadedFiles의
+// /^uploads\//  매칭과 맞아떨어진다 — 도메인을 무시하고 pathname만 뽑아낸다.
+function toZipUploadPath(uploadPath: string): string {
+  try {
+    return new URL(uploadPath).pathname.replace(/^\/+/, "");
+  } catch {
+    return uploadPath.replace(/^\/+/, "");
+  }
+}
+
 // 병합 복원 시 회차 id가 새로 매겨지면 그 회차 소유 업로드 파일의 경로도 새 id
 // 아래로 옮겨야 CutAsset.fileUrl 참조가 깨지지 않는다. 휴지통이 참조하는 경로처럼
 // episodeIdMap에 없는 id는 그대로 둔다(휴지통은 병합 시에도 원본 id를 유지한다).
+// fileUrl은 완전한 Blob URL("https://<store>/uploads/...")일 수도, 예전 형식의
+// 상대 경로("/uploads/...")일 수도 있어 둘 다 처리한다 — URL이면 origin은 그대로
+// 두고 pathname의 episodeId 부분만 바꿔치기한다.
 function remapUploadPath(originalPath: string, episodeIdMap: Map<string, string>): string {
-  const match = originalPath.match(/^\/uploads\/([^/]+)\//);
+  let url: URL | null = null;
+  try {
+    url = new URL(originalPath);
+  } catch {
+    url = null;
+  }
+  const pathname = url ? url.pathname : originalPath;
+  const match = pathname.match(/^\/uploads\/([^/]+)\//);
   if (!match) return originalPath;
   const newEpisodeId = episodeIdMap.get(match[1]);
   if (!newEpisodeId) return originalPath;
-  return originalPath.replace(`/uploads/${match[1]}/`, `/uploads/${newEpisodeId}/`);
+  const newPathname = pathname.replace(`/uploads/${match[1]}/`, `/uploads/${newEpisodeId}/`);
+  if (url) {
+    url.pathname = newPathname;
+    return url.toString();
+  }
+  return newPathname;
 }
 
 async function restoreUploadedFiles(
@@ -173,17 +229,11 @@ export async function exportBackup(
 ): Promise<Blob> {
   onProgress?.("데이터 수집 중", 0);
 
-  const series = readJson<Series[]>(SERIES_KEY, []);
-  const episodes = readJson<Episode[]>(EPISODES_KEY, []);
-  const characters = readJson<Character[]>(CHARACTERS_KEY, []);
+  const { series, episodes, characters } = await fetchBootstrap();
 
   const episodeData: Record<string, EpisodeBackupData> = {};
   for (const episode of episodes) {
-    episodeData[episode.id] = {
-      cuts: readJson<Cut[]>(`movingtoon:${episode.id}:cuts`, []),
-      assets: readJson<CutAsset[]>(`movingtoon:${episode.id}:assets`, []),
-      stylePreset: window.localStorage.getItem(`movingtoon:${episode.id}:stylePreset`),
-    };
+    episodeData[episode.id] = await fetchEpisodeAux(episode.id);
   }
 
   const zip = new JSZip();
@@ -239,7 +289,7 @@ export async function exportBackup(
     try {
       const res = await fetch(uploadPath);
       if (res.ok) {
-        zip.file(uploadPath.slice(1), await res.blob());
+        zip.file(toZipUploadPath(uploadPath), await res.blob());
       }
     } catch {
       // 개별 파일 수집 실패는 건너뛰고 계속 진행 — 이미 지워졌을 수 있다.
@@ -319,15 +369,6 @@ export async function readBackupFile(file: File): Promise<BackupReadResult> {
   return { valid: true, data, zip };
 }
 
-function clearAllLocalStorageData() {
-  const keysToRemove: string[] = [];
-  for (let i = 0; i < window.localStorage.length; i++) {
-    const key = window.localStorage.key(i);
-    if (key?.startsWith("movingtoon:")) keysToRemove.push(key);
-  }
-  keysToRemove.forEach((key) => window.localStorage.removeItem(key));
-}
-
 async function restoreGalleryImages(
   galleryIndex: GalleryIndexEntry[],
   zip: JSZip,
@@ -378,31 +419,37 @@ export async function importBackup(
   onProgress?.("데이터 준비 중", 0);
 
   if (mode === "overwrite") {
-    clearAllLocalStorageData();
+    const existing = await fetchBootstrap();
     await clearAllGalleryData();
 
-    writeJson(SERIES_KEY, data.series);
-    writeJson(EPISODES_KEY, data.episodes);
-    writeJson(CHARACTERS_KEY, data.characters);
+    // 시리즈를 지우면 DB 외래키 CASCADE로 회차/캐릭터까지 함께 지워진다.
+    for (const series of existing.series) {
+      await fetch(`/api/db/series/${series.id}`, { method: "DELETE" });
+    }
 
+    for (const series of data.series) {
+      await postJson("/api/db/series", series);
+    }
     for (const episode of data.episodes) {
+      await postJson("/api/db/episodes", episode);
       const ep = data.episodeData[episode.id];
-      if (!ep) continue;
-      writeJson(`movingtoon:${episode.id}:cuts`, ep.cuts);
-      writeJson(`movingtoon:${episode.id}:assets`, ep.assets);
-      if (ep.stylePreset) {
-        window.localStorage.setItem(`movingtoon:${episode.id}:stylePreset`, ep.stylePreset);
+      // 방금 만든 새 회차 행은 cuts_updated_at/board_updated_at이 항상 기본값 0이다.
+      if (ep) {
+        await patchJson(`/api/db/episodes/${episode.id}`, {
+          ...ep,
+          expectedCutsUpdatedAt: 0,
+          expectedBoardUpdatedAt: 0,
+        });
       }
+    }
+    for (const character of data.characters) {
+      await postJson("/api/db/characters", character);
     }
 
     await restoreGalleryImages(data.galleryIndex, zip, (id) => id, onProgress);
     // overwrite는 id를 그대로 쓰므로 원래 경로 그대로 복원하면 된다.
     await restoreUploadedFiles(zip, (path) => path, onProgress);
   } else {
-    const existingSeries = readJson<Series[]>(SERIES_KEY, []);
-    const existingEpisodes = readJson<Episode[]>(EPISODES_KEY, []);
-    const existingCharacters = readJson<Character[]>(CHARACTERS_KEY, []);
-
     const seriesIdMap = new Map<string, string>();
     const episodeIdMap = new Map<string, string>();
     const characterIdMap = new Map<string, string>();
@@ -429,15 +476,20 @@ export async function importBackup(
       };
     });
 
-    writeJson(SERIES_KEY, [...existingSeries, ...newSeries]);
-    writeJson(EPISODES_KEY, [...existingEpisodes, ...newEpisodes]);
-    writeJson(CHARACTERS_KEY, [...existingCharacters, ...newCharacters]);
+    for (const series of newSeries) {
+      await postJson("/api/db/series", series);
+    }
+    for (const character of newCharacters) {
+      await postJson("/api/db/characters", character);
+    }
 
+    for (const episode of newEpisodes) {
+      await postJson("/api/db/episodes", episode);
+    }
     for (const episode of data.episodes) {
       const ep = data.episodeData[episode.id];
       const newEpisodeId = episodeIdMap.get(episode.id);
       if (!ep || !newEpisodeId) continue;
-      writeJson(`movingtoon:${newEpisodeId}:cuts`, ep.cuts);
       // 회차 id가 바뀌므로 그 회차 소유 업로드 파일의 경로(/uploads/<id>/...)도
       // 새 id 아래로 다시 써줘야 fileUrl 참조가 깨지지 않는다.
       const remappedAssets = ep.assets.map((asset) => ({
@@ -447,10 +499,15 @@ export async function importBackup(
           ? remapUploadPath(asset.thumbnailUrl, episodeIdMap)
           : asset.thumbnailUrl,
       }));
-      writeJson(`movingtoon:${newEpisodeId}:assets`, remappedAssets);
-      if (ep.stylePreset) {
-        window.localStorage.setItem(`movingtoon:${newEpisodeId}:stylePreset`, ep.stylePreset);
-      }
+      // 방금 만든 새 회차 행은 cuts_updated_at/board_updated_at이 항상 기본값 0이다.
+      await patchJson(`/api/db/episodes/${newEpisodeId}`, {
+        cuts: ep.cuts,
+        assets: remappedAssets,
+        stylePreset: ep.stylePreset,
+        board: ep.board,
+        expectedCutsUpdatedAt: 0,
+        expectedBoardUpdatedAt: 0,
+      });
     }
 
     await restoreGalleryImages(

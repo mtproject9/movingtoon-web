@@ -5,6 +5,8 @@ import { Images, Pencil, Plus, Trash2, UserRound } from "lucide-react";
 import { useSeries } from "@/context/SeriesContext";
 import { useTrash } from "@/context/TrashContext";
 import type { Character } from "@/lib/types";
+import { addGalleryImages } from "@/lib/galleryDb";
+import { readFileAsDataUrl } from "@/lib/files";
 import CharacterModal, { type CharacterFormValues } from "./CharacterModal";
 import CharacterGalleryModal from "./CharacterGalleryModal";
 import ConfirmDialog from "./ConfirmDialog";
@@ -28,13 +30,26 @@ export default function CharacterSheetPanel({ seriesId }: { seriesId: string }) 
     setIsModalOpen(true);
   }
 
-  function handleSubmit(values: CharacterFormValues) {
+  // 새 캐릭터 등록 시 함께 올린 참조 이미지가 있으면, 캐릭터를 만든 직후(=진짜 id가
+  // 생긴 직후) 그 id로 참조 이미지 갤러리에 한 번에 저장하고, 첫 장을 대표 프로필
+  // 이미지로 지정한다 — "기본정보 등록 → 갤러리 관리"로 나뉘어 있던 2단계를 하나로 합침.
+  async function handleSubmit(values: CharacterFormValues, referenceImages?: File[]) {
     if (editingCharacter) {
       updateCharacter(editingCharacter.id, values);
-    } else {
-      addCharacter(seriesId, values);
+      setIsModalOpen(false);
+      return;
     }
+
+    const created = addCharacter(seriesId, values);
     setIsModalOpen(false);
+
+    if (referenceImages && referenceImages.length > 0) {
+      const uploaded = await addGalleryImages(created.id, referenceImages);
+      if (uploaded[0]) {
+        const dataUrl = await readFileAsDataUrl(uploaded[0].thumbnailBlob);
+        updateCharacter(created.id, { profileImage: dataUrl });
+      }
+    }
   }
 
   async function handleConfirmDelete() {

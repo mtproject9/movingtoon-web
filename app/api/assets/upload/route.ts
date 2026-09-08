@@ -1,15 +1,13 @@
-import { unlink } from "fs/promises";
 import { NextResponse } from "next/server";
 import {
+  deleteFromBlob,
   makeFileId,
-  resolvePublicPath,
-  resolveSafeEpisodeId,
-  saveEpisodeFile,
-} from "@/lib/localAssetStorage";
+  sanitizeSegment,
+  uploadToBlob,
+} from "@/lib/blobStorage";
 
 // 4K 컷 이미지는 수 MB~수십 MB에 달해 브라우저 localStorage에 넣을 수 없으므로
-// public/uploads/<episodeId>/ 아래 로컬 파일로 저장하고, 화면에는 fileUrl(경로)만
-// CutAsset에 보관한다. 회차 단위 폴더는 회차 삭제/영구삭제 정리 작업의 단위도 된다.
+// Vercel Blob에 저장하고, 화면에는 fileUrl(공개 URL)만 CutAsset에 보관한다.
 const MAX_FILE_SIZE = 30 * 1024 * 1024;
 
 export async function POST(request: Request) {
@@ -27,7 +25,7 @@ export async function POST(request: Request) {
   if (typeof episodeId !== "string" || !episodeId.trim()) {
     return NextResponse.json({ error: "episodeId가 필요합니다." }, { status: 400 });
   }
-  const safeEpisodeId = resolveSafeEpisodeId(episodeId);
+  const safeEpisodeId = sanitizeSegment(episodeId);
   if (!safeEpisodeId) {
     return NextResponse.json({ error: "잘못된 episodeId입니다." }, { status: 400 });
   }
@@ -43,11 +41,18 @@ export async function POST(request: Request) {
   }
 
   const fileId = makeFileId();
-  const fileUrl = await saveEpisodeFile(safeEpisodeId, fileId, file);
+  const fileUrl = await uploadToBlob(`uploads/${safeEpisodeId}`, fileId, file, file.name);
 
   let thumbnailUrl: string | undefined;
   if (thumbnail instanceof File) {
-    thumbnailUrl = await saveEpisodeFile(safeEpisodeId, fileId, thumbnail, "_thumb", "webp");
+    thumbnailUrl = await uploadToBlob(
+      `uploads/${safeEpisodeId}`,
+      fileId,
+      thumbnail,
+      "thumb.webp",
+      "_thumb",
+      "webp"
+    );
   }
 
   return NextResponse.json({ fileUrl, thumbnailUrl, fileName: file.name });
@@ -65,14 +70,7 @@ export async function DELETE(request: Request) {
 
   for (const candidate of paths) {
     if (typeof candidate !== "string") continue;
-    const absolute = resolvePublicPath(candidate);
-    if (!absolute) continue;
-
-    try {
-      await unlink(absolute);
-    } catch {
-      // 이미 지워졌거나 없는 파일은 무시
-    }
+    await deleteFromBlob(candidate);
   }
 
   return NextResponse.json({ ok: true });

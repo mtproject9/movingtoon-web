@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Gugi } from "next/font/google";
-import { SeriesProvider } from "@/context/SeriesContext";
-import { TrashProvider } from "@/context/TrashContext";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -35,11 +33,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="ko"
       className={`${geistSans.variable} ${geistMono.variable} ${gugi.variable} h-full antialiased`}
     >
-      <body className="flex h-full min-h-full flex-col">
-        <SeriesProvider>
-          <TrashProvider>{children}</TrashProvider>
-        </SeriesProvider>
-      </body>
+      <body className="flex h-full min-h-full flex-col">{children}</body>
     </html>
   );
 }

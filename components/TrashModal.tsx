@@ -1,10 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { Inbox, Loader2, RotateCcw, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Folder, Inbox, Loader2, Music, RotateCcw, Image as ImageIcon, Trash2, User, X, Check } from "lucide-react";
 import { useTrash } from "@/context/TrashContext";
 import { useSeries } from "@/context/SeriesContext";
-import type { TrashEntry, TrashItemType } from "@/lib/types";
+import type {
+  BoardImageTrashPayload,
+  CharacterTrashPayload,
+  CutAssetTrashPayload,
+  GalleryImageTrashPayload,
+  TrashEntry,
+  TrashItemType,
+} from "@/lib/types";
 import ConfirmDialog from "./ConfirmDialog";
 
 const TYPE_LABEL: Record<TrashItemType, string> = {
@@ -14,7 +21,88 @@ const TYPE_LABEL: Record<TrashItemType, string> = {
   cut: "컷",
   cutAsset: "에셋 파일",
   galleryImage: "참조 이미지",
+  boardImage: "진행 보드 이미지",
 };
+
+// 썸네일이 없는 항목(시리즈/회차/오디오 에셋 등)에 대신 보여줄 아이콘.
+const TYPE_ICON: Record<TrashItemType, typeof Folder> = {
+  series: Folder,
+  episode: Folder,
+  character: User,
+  cut: ImageIcon,
+  cutAsset: Music,
+  galleryImage: ImageIcon,
+  boardImage: ImageIcon,
+};
+
+type ThumbSource = { kind: "url"; url: string } | { kind: "blob"; blob: Blob } | { kind: "icon" };
+
+// 항목 타입별로 실제 저장된 데이터(공개 URL 또는 IndexedDB의 Blob)에서
+// 미리보기에 쓸 이미지 소스를 뽑아낸다. 없으면 타입별 대표 아이콘으로 대체.
+function getThumbSource(entry: TrashEntry): ThumbSource {
+  switch (entry.itemType) {
+    case "cutAsset": {
+      const { asset } = entry.payload as CutAssetTrashPayload;
+      return asset.type === "IMAGE" ? { kind: "url", url: asset.thumbnailUrl || asset.fileUrl } : { kind: "icon" };
+    }
+    case "boardImage": {
+      const { image } = entry.payload as BoardImageTrashPayload;
+      return { kind: "url", url: image.thumbnailUrl || image.fileUrl };
+    }
+    case "galleryImage": {
+      const { image } = entry.payload as GalleryImageTrashPayload;
+      return { kind: "blob", blob: image.meta.thumbnailBlob };
+    }
+    case "character": {
+      const { character } = entry.payload as CharacterTrashPayload;
+      return character.profileImage ? { kind: "url", url: character.profileImage } : { kind: "icon" };
+    }
+    default:
+      return { kind: "icon" };
+  }
+}
+
+// blob이 null이면 애초에 호출부(TrashThumb)가 반환값을 쓰지 않으므로 리셋은 불필요.
+function useObjectUrl(blob: Blob | null): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) return;
+    const objectUrl = URL.createObjectURL(blob);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [blob]);
+  return url;
+}
+
+function TrashThumb({ entry }: { entry: TrashEntry }) {
+  const source = getThumbSource(entry);
+  const blobUrl = useObjectUrl(source.kind === "blob" ? source.blob : null);
+  const Icon = TYPE_ICON[entry.itemType];
+
+  if (source.kind === "url") {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={source.url} alt="" loading="lazy" className="h-full w-full object-cover" />
+    );
+  }
+  if (source.kind === "blob") {
+    if (!blobUrl) {
+      return (
+        <div className="flex h-full w-full items-center justify-center">
+          <Loader2 className="h-5 w-5 animate-spin text-slate-300" />
+        </div>
+      );
+    }
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={blobUrl} alt="" loading="lazy" className="h-full w-full object-cover" />;
+  }
+  return (
+    <div className="flex h-full w-full items-center justify-center">
+      <Icon className="h-7 w-7 text-slate-300" />
+    </div>
+  );
+}
 
 function formatRelativeTime(timestamp: number): string {
   const diffMs = Date.now() - timestamp;
@@ -146,9 +234,9 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
               휴지통이 비어 있습니다.
             </div>
           ) : (
-            <ul className="flex flex-col gap-1.5">
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
               {entries.map((entry) => (
-                <TrashRow
+                <TrashCard
                   key={entry.id}
                   entry={entry}
                   isSelected={selectedIds.has(entry.id)}
@@ -158,7 +246,7 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
                   disabled={isBusy}
                 />
               ))}
-            </ul>
+            </div>
           )}
         </div>
       </div>
@@ -180,7 +268,7 @@ export default function TrashModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function TrashRow({
+function TrashCard({
   entry,
   isSelected,
   onToggle,
@@ -196,44 +284,54 @@ function TrashRow({
   disabled: boolean;
 }) {
   return (
-    <li
-      className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 ${
-        isSelected ? "border-rose-200 bg-rose-50" : "border-slate-100"
+    <div
+      className={`group relative flex flex-col overflow-hidden rounded-lg border ${
+        isSelected ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"
       }`}
     >
-      <input
-        type="checkbox"
-        checked={isSelected}
-        onChange={onToggle}
-        className="h-3.5 w-3.5 shrink-0"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-            {TYPE_LABEL[entry.itemType]}
-          </span>
-          <p className="truncate text-sm text-slate-700">{entry.label}</p>
+      <button
+        onClick={onToggle}
+        aria-label={`${entry.label} 선택`}
+        className="relative aspect-square w-full overflow-hidden bg-slate-100"
+      >
+        <TrashThumb entry={entry} />
+        <span
+          className={`absolute left-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded border transition-opacity ${
+            isSelected
+              ? "border-rose-400 bg-rose-500 text-white opacity-100"
+              : "border-white/80 bg-black/30 text-transparent opacity-0 group-hover:opacity-100"
+          }`}
+        >
+          <Check className="h-3.5 w-3.5" />
+        </span>
+        <span className="absolute right-1.5 top-1.5 z-10 rounded-full bg-black/50 px-1.5 py-0.5 text-[9px] font-medium text-white">
+          {TYPE_LABEL[entry.itemType]}
+        </span>
+      </button>
+      <div className="flex flex-col gap-0.5 px-2 py-1.5">
+        <p className="break-all text-xs text-slate-700">{entry.label}</p>
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-slate-400">{formatRelativeTime(entry.deletedAt)}</span>
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <button
+              onClick={onRestore}
+              disabled={disabled}
+              title="복원"
+              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-emerald-600 disabled:opacity-40"
+            >
+              <RotateCcw className="h-3 w-3" />
+            </button>
+            <button
+              onClick={onDeletePermanently}
+              disabled={disabled}
+              title="영구 삭제"
+              className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-40"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </div>
         </div>
-        <p className="mt-0.5 text-[11px] text-slate-400">{formatRelativeTime(entry.deletedAt)} 삭제됨</p>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <button
-          onClick={onRestore}
-          disabled={disabled}
-          title="복원"
-          className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-emerald-600 disabled:opacity-40"
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={onDeletePermanently}
-          disabled={disabled}
-          title="영구 삭제"
-          className="rounded-full p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-40"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </li>
+    </div>
   );
 }

@@ -10,16 +10,14 @@ import {
   useState,
 } from "react";
 import type { Cut } from "@/lib/types";
-import { loadEpisodeDraftFromDb, saveEpisodeDraftToDb } from "@/lib/cutsDb";
-import { buildSplitImagePrompt } from "@/lib/promptRules";
 
 export type CutInsertPosition = "before" | "after";
 
-// 텍스트 입력/컷 수정처럼 빠르게 연속 발생하는 이벤트마다 디스크에 쓰지 않도록
+// 텍스트 입력/컷 수정처럼 빠르게 연속 발생하는 이벤트마다 서버에 쓰지 않도록
 // 묶어서(debounce) 저장한다. 값 자체는 항상 최신 React state이므로 유실 없이
 // 저장 "빈도"만 줄인다 — 탭 종료 등으로 타이머가 미처 돌기 전이면 flush()가
 // 즉시 최신 상태를 써서 보완한다.
-const SAVE_DEBOUNCE_MS = 300;
+const SAVE_DEBOUNCE_MS = 500;
 
 interface CutsContextValue {
   cuts: Cut[];
@@ -32,17 +30,12 @@ interface CutsContextValue {
   selectedCut: Cut | null;
   scriptText: string;
   setScriptText: (text: string) => void;
+  stylePresetId: string | null;
+  setStylePresetId: (id: string) => void;
+  saveError: string | null;
 }
 
 const CutsContext = createContext<CutsContextValue | null>(null);
-
-function cutsStorageKey(episodeId: string) {
-  return `movingtoon:${episodeId}:cuts`;
-}
-
-function scriptTextStorageKey(episodeId: string) {
-  return `movingtoon:${episodeId}:scriptText`;
-}
 
 function makeCutId() {
   return `cut-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -57,57 +50,48 @@ export function CutsProvider({
 }) {
   const [cuts, setCutsState] = useState<Cut[]>([]);
   const [scriptText, setScriptTextState] = useState("");
+  const [stylePresetId, setStylePresetIdState] = useState<string | null>(null);
   const [selectedCutId, setSelectedCutId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // flush()가 (디바운스 타이머와 무관하게) 언제 불려도 항상 최신 값을 쓸 수 있도록
   // 렌더마다 최신 state를 ref에 미러링해 둔다.
-  const latestRef = useRef({ cuts, scriptText });
-  latestRef.current = { cuts, scriptText };
+  const latestRef = useRef({ cuts, scriptText, stylePresetId });
   const hydratedRef = useRef(false);
-  hydratedRef.current = hydrated;
+  // flush를 episodeId에 의존하는 useCallback으로 만들면(과거 방식) 회차를 옮길 때마다
+  // flush 함수 자체가 새로 생겨, 그걸 참조하던 별도 effect의 클린업이 "언마운트"가
+  // 아니라 "회차 전환"에도 걸려 나오게 된다. 그 클린업과, 다음 회차를 위해 dirtyRef 등을
+  // 리셋하는 이 effect의 새 실행이 서로 다른 effect라 순서가 실행 시점에 따라 꼬일 수
+  // 있어(리셋이 먼저 반영되면 방금 떠난 회차의 flush가 "편집 없음"으로 오인해 조용히
+  // 스킵됨), 결과적으로 빠르게 회차를 넘나들 때 마지막 몇 초의 편집이 저장 안 되고
+  // 사라질 위험이 있었다. episodeId를 ref로 옮겨 flush를 완전히 안정된(의존성 없는)
+  // 함수로 만들고, "이 회차를 떠나기 전에 저장"은 아예 이 effect 자신의 클린업에서
+  // 처리해 같은 effect 안에서 항상 flush(옛 회차) → 리셋(새 회차) 순서가 보장되게 한다.
+  const episodeIdRef = useRef(episodeId);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 이 탭에서 실제로 뭔가 편집했을 때만 true — 서버에서 막 불러온 값을 그대로
+  // 들고 있기만 한 탭이 나중에(예: 오래 열어뒀다 닫을 때) 그 사이 다른 곳에서
+  // 저장된 최신 내용을 옛날 값으로 덮어쓰는 사고를 막기 위한 안전장치.
+  const dirtyRef = useRef(false);
+  // 서버가 마지막으로 확인해 준 cuts 버전 — flush()가 이 값을 함께 보내 "내가
+  // 불러온 이후 다른 곳에서 먼저 저장된 게 없는지" 서버가 대조하게 한다.
+  const cutsUpdatedAtRef = useRef(0);
+  // 서버가 한 번이라도 버전 충돌(다른 곳에서 먼저 저장됨)로 거부하면, 이 탭은
+  // 최신 상태가 아니므로 새로고침 전까지 더 이상 저장을 시도하지 않는다.
+  const conflictRef = useRef(false);
 
   useEffect(() => {
-    // localStorage는 서버 렌더링 시점에 접근할 수 없어 lazy useState 초기값으로 쓰면
-    // SSR과 클라이언트 첫 렌더 결과가 달라져 하이드레이션 불일치가 발생한다.
-    let cancelled = false;
+    latestRef.current = { cuts, scriptText, stylePresetId };
+    hydratedRef.current = hydrated;
+    // 다음 커밋의 클린업 단계에서 실행될 flush()가 "떠나는 회차"를 정확히
+    // 가리키도록, 이 ref는 항상 setup 단계(클린업 이후)에서만 갱신한다.
+    episodeIdRef.current = episodeId;
+  });
 
-    (async () => {
-      let restoredCuts: Cut[] = [];
-      let restoredScriptText = "";
-      try {
-        // IndexedDB가 항상 완전한 데이터(생성된 이미지 imageUrl 포함)를 갖고 있으므로
-        // 우선 시도한다 — localStorage는 용량 때문에 imageUrl을 뺀 경량 버전만 담는다.
-        const fromDb = await loadEpisodeDraftFromDb(episodeId);
-        if (fromDb && (fromDb.cuts.length > 0 || fromDb.scriptText)) {
-          restoredCuts = fromDb.cuts;
-          restoredScriptText = fromDb.scriptText;
-        } else {
-          // IndexedDB가 비어 있으면(이 기능 도입 이전 데이터, 사생활 보호 모드 등)
-          // localStorage에서 복구한다.
-          const rawCuts = window.localStorage.getItem(cutsStorageKey(episodeId));
-          const rawScriptText = window.localStorage.getItem(scriptTextStorageKey(episodeId));
-          if (rawCuts) restoredCuts = JSON.parse(rawCuts) as Cut[];
-          if (rawScriptText !== null) restoredScriptText = rawScriptText;
-        }
-      } catch {
-        // 저장된 데이터가 없거나 손상된 경우 빈 상태로 시작
-      }
-
-      if (cancelled) return;
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCutsState(restoredCuts);
-      setScriptTextState(restoredScriptText);
-      setSelectedCutId(restoredCuts[0]?.id ?? null);
-      setHydrated(true);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [episodeId]);
-
+  // episodeId를 의존성으로 잡지 않는 안정된 함수 — 대신 항상 episodeIdRef.current를
+  // 읽는다(위 미러링 effect가 setup 단계에서만 갱신해주므로, 회차 전환 클린업 시점엔
+  // 아직 "떠나는" 옛 회차 값 그대로다).
   const flush = useCallback(() => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
@@ -115,25 +99,94 @@ export function CutsProvider({
     }
     // 하이드레이션이 끝나기 전(=아직 저장된 값을 읽어오기 전) state는 빈 초기값이라,
     // 이 시점에 flush가 실행되면 실제 저장된 데이터를 빈 값으로 덮어쓰게 된다.
-    if (!hydratedRef.current) return;
+    // 이 탭에서 실제 편집이 한 번도 없었다면(불러온 값 그대로) 저장할 이유가 없고,
+    // 오히려 그 사이 다른 곳에서 갱신된 최신 데이터를 옛 값으로 덮어쓸 위험만 있다.
+    // 이미 버전 충돌이 한 번 확인된 탭이면(다른 곳에서 먼저 저장함) 새로고침 전까지
+    // 같은 문제를 반복해서 시도하지 않는다.
+    if (!hydratedRef.current || !dirtyRef.current || conflictRef.current) return;
 
-    const { cuts: latestCuts, scriptText: latestScriptText } = latestRef.current;
-    try {
-      // 생성된 이미지(imageUrl, base64 data URL)는 용량이 커 localStorage 5~10MB
-      // 한도를 금방 넘길 수 있다 — 빼고 저장하고, 전체 값은 IndexedDB에만 담는다.
-      const lightweightCuts = latestCuts.map((cut) => {
-        if (!cut.imageUrl) return cut;
-        const clone: Cut = { ...cut };
-        delete clone.imageUrl;
-        return clone;
+    const targetEpisodeId = episodeIdRef.current;
+    const { cuts: latestCuts, scriptText: latestScriptText, stylePresetId: latestPreset } =
+      latestRef.current;
+
+    fetch(`/api/db/episodes/${targetEpisodeId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cuts: latestCuts,
+        scriptText: latestScriptText,
+        stylePreset: latestPreset,
+        expectedCutsUpdatedAt: cutsUpdatedAtRef.current,
+      }),
+    })
+      .then(async (res) => {
+        if (res.status === 409) {
+          conflictRef.current = true;
+          setSaveError(
+            "다른 곳에서 먼저 저장되어 이 화면은 최신 상태가 아니에요. 새로고침 후 다시 시도해주세요."
+          );
+          return;
+        }
+        if (!res.ok) throw new Error("save failed");
+        const body = (await res.json().catch(() => null)) as { cutsUpdatedAt?: number } | null;
+        if (typeof body?.cutsUpdatedAt === "number") {
+          cutsUpdatedAtRef.current = body.cutsUpdatedAt;
+        }
+        setSaveError(null);
+      })
+      .catch(() => {
+        setSaveError("저장하지 못했습니다. 인터넷 연결을 확인해주세요.");
       });
-      window.localStorage.setItem(cutsStorageKey(episodeId), JSON.stringify(lightweightCuts));
-      window.localStorage.setItem(scriptTextStorageKey(episodeId), latestScriptText);
-    } catch {
-      // 저장 공간 초과 등 localStorage 쓰기 실패는 무시하고 IndexedDB 저장으로 보완한다.
-    }
-    void saveEpisodeDraftToDb(episodeId, { cuts: latestCuts, scriptText: latestScriptText });
-  }, [episodeId]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHydrated(false);
+    dirtyRef.current = false;
+    conflictRef.current = false;
+
+    (async () => {
+      let restoredCuts: Cut[] = [];
+      let restoredScriptText = "";
+      let restoredStylePreset: string | null = null;
+      try {
+        const res = await fetch(`/api/db/episodes/${episodeId}`);
+        if (res.ok) {
+          const data = (await res.json()) as {
+            cuts: Cut[];
+            scriptText: string;
+            stylePreset: string | null;
+            cutsUpdatedAt: number;
+          };
+          restoredCuts = data.cuts ?? [];
+          restoredScriptText = data.scriptText ?? "";
+          restoredStylePreset = data.stylePreset ?? null;
+          cutsUpdatedAtRef.current = data.cutsUpdatedAt ?? 0;
+        }
+      } catch {
+        // 네트워크 실패 시 빈 상태로 시작 — flush 저장 실패 알림과 별개로 조용히 처리
+      }
+
+      if (cancelled) return;
+
+      setCutsState(restoredCuts);
+      setScriptTextState(restoredScriptText);
+      setStylePresetIdState(restoredStylePreset);
+      setSelectedCutId(restoredCuts[0]?.id ?? null);
+      setHydrated(true);
+    })();
+
+    return () => {
+      cancelled = true;
+      // 이 회차를 떠나기 직전(다른 회차로 이동 또는 언마운트)에 대기 중인 변경사항을
+      // 즉시 저장한다. flush가 episodeId에 의존하지 않는 안정된 함수라, 이 클린업이
+      // 먼저 실행되고 그 다음에야(같은 커밋의 setup 단계에서) 위 dirtyRef 리셋이
+      // 일어나는 순서가 항상 보장된다 — flush(옛 회차)가 리셋보다 늦게 실행되어
+      // "편집 없음"으로 오인되는 일이 없다.
+      flush();
+    };
+  }, [episodeId, flush]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -142,34 +195,42 @@ export function CutsProvider({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [cuts, scriptText, hydrated, flush]);
+  }, [cuts, scriptText, stylePresetId, hydrated, flush]);
 
   useEffect(() => {
     // 브라우저/탭을 닫을 때 디바운스 타이머가 아직 안 돌았어도 최신 상태를 즉시 저장한다.
+    // (회차 전환/언마운트 시 flush는 위 데이터 로딩 effect의 클린업이 담당한다.)
     window.addEventListener("beforeunload", flush);
     return () => {
       window.removeEventListener("beforeunload", flush);
-      // 다른 회차로 이동하거나 컴포넌트가 사라질 때도 대기 중인 저장을 즉시 반영한다.
-      flush();
     };
   }, [flush]);
 
   const setCuts = useCallback((next: Cut[]) => {
+    dirtyRef.current = true;
     setCutsState(next);
     setSelectedCutId(next[0]?.id ?? null);
   }, []);
 
   const setScriptText = useCallback((text: string) => {
+    dirtyRef.current = true;
     setScriptTextState(text);
   }, []);
 
+  const setStylePresetId = useCallback((id: string) => {
+    dirtyRef.current = true;
+    setStylePresetIdState(id);
+  }, []);
+
   const updateCut = useCallback((id: string, patch: Partial<Cut>) => {
+    dirtyRef.current = true;
     setCutsState((prev) =>
       prev.map((cut) => (cut.id === id ? { ...cut, ...patch } : cut))
     );
   }, []);
 
   const removeCut = useCallback((id: string) => {
+    dirtyRef.current = true;
     setCutsState((prev) => {
       const removedIndex = prev.findIndex((cut) => cut.id === id);
       const next = prev.filter((cut) => cut.id !== id);
@@ -185,6 +246,7 @@ export function CutsProvider({
   }, []);
 
   const addCut = useCallback((referenceId: string, position: CutInsertPosition) => {
+    dirtyRef.current = true;
     setCutsState((prev) => {
       const refIndex = prev.findIndex((cut) => cut.id === referenceId);
       if (refIndex === -1) return prev;
@@ -204,8 +266,6 @@ export function CutsProvider({
         sceneNumber: reference.sceneNumber,
         ...blankCutInput,
         status: "SCRIPT_DONE",
-        // 빈 컷이라도 항상 완성된 형태의 기본 프롬프트가 채워져 있어야 한다.
-        imagePrompt: buildSplitImagePrompt(blankCutInput),
       };
 
       const insertAt = position === "after" ? refIndex + 1 : refIndex;
@@ -233,6 +293,9 @@ export function CutsProvider({
     selectedCut,
     scriptText,
     setScriptText,
+    stylePresetId,
+    setStylePresetId,
+    saveError,
   };
 
   return <CutsContext.Provider value={value}>{children}</CutsContext.Provider>;

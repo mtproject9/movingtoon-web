@@ -2,6 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type {
+  BoardImage,
+  BoardImageTrashPayload,
   Character,
   CharacterTrashPayload,
   Cut,
@@ -34,52 +36,122 @@ import {
 } from "@/lib/galleryDb";
 import { deleteUploadedFiles } from "@/lib/assetUpload";
 
-const SERIES_KEY = "movingtoon:series";
-const EPISODES_KEY = "movingtoon:episodes";
-const CHARACTERS_KEY = "movingtoon:characters";
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(key: string, value: unknown) {
-  window.localStorage.setItem(key, JSON.stringify(value));
-}
-
-function cutsKey(episodeId: string) {
-  return `movingtoon:${episodeId}:cuts`;
-}
-function assetsKey(episodeId: string) {
-  return `movingtoon:${episodeId}:assets`;
-}
-function stylePresetKey(episodeId: string) {
-  return `movingtoon:${episodeId}:stylePreset`;
-}
-
 function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-// 컷 에셋(4K 이미지/음성)은 IndexedDB가 아닌 서버 로컬 폴더(public/uploads)에 저장되므로
-// 영구 삭제 시 파일도 함께 정리해야 디스크에 고아 파일이 남지 않는다.
+interface EpisodeAux {
+  cuts: Cut[];
+  assets: CutAsset[];
+  stylePreset: string | null;
+  board: BoardImage[];
+}
+
+interface EpisodeAuxWithVersion extends EpisodeAux {
+  // cuts/board를 함께 저장할 때 서버가 "그 사이 다른 곳에서 먼저 저장한 게 없는지"
+  // 대조하는 값 — 휴지통/백업처럼 사용자가 명시적으로 요청한 복원 작업도 이
+  // 값을 넘겨야 최신 버전 위에 정확히 반영된다. 진행 보드는 원고 분할 화면과
+  // 별개 화면이라 버전도 따로 관리한다.
+  cutsUpdatedAt: number;
+  boardUpdatedAt: number;
+}
+
+// 회차의 cuts/assets/stylePreset/board는 이제 서버(episodes 테이블 컬럼)에 있으므로
+// 휴지통 캡처/복원 시 localStorage 대신 이 API를 거쳐 읽고 쓴다.
+async function fetchEpisodeAux(episodeId: string): Promise<EpisodeAuxWithVersion> {
+  try {
+    const res = await fetch(`/api/db/episodes/${episodeId}`);
+    if (!res.ok) return { cuts: [], assets: [], stylePreset: null, board: [], cutsUpdatedAt: 0, boardUpdatedAt: 0 };
+    const data = (await res.json()) as EpisodeAuxWithVersion;
+    return {
+      cuts: data.cuts ?? [],
+      assets: data.assets ?? [],
+      stylePreset: data.stylePreset ?? null,
+      board: data.board ?? [],
+      cutsUpdatedAt: data.cutsUpdatedAt ?? 0,
+      boardUpdatedAt: data.boardUpdatedAt ?? 0,
+    };
+  } catch {
+    return { cuts: [], assets: [], stylePreset: null, board: [], cutsUpdatedAt: 0, boardUpdatedAt: 0 };
+  }
+}
+
+async function patchEpisodeAux(
+  episodeId: string,
+  patch: Partial<Pick<EpisodeAux, "cuts" | "assets" | "stylePreset">>,
+  expectedCutsUpdatedAt: number
+): Promise<void> {
+  await fetch(`/api/db/episodes/${episodeId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...patch, expectedCutsUpdatedAt }),
+  });
+}
+
+async function patchEpisodeBoard(
+  episodeId: string,
+  board: BoardImage[],
+  expectedBoardUpdatedAt: number
+): Promise<void> {
+  await fetch(`/api/db/episodes/${episodeId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ board, expectedBoardUpdatedAt }),
+  });
+}
+
+async function createSeriesRow(series: Series): Promise<void> {
+  await fetch("/api/db/series", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(series),
+  });
+}
+
+async function createEpisodeRow(episode: Episode, aux: EpisodeAux): Promise<void> {
+  await fetch("/api/db/episodes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(episode),
+  });
+  // 방금 POST로 만든 새 행은 cuts_updated_at/board_updated_at이 항상 기본값 0이다.
+  await patchEpisodeAux(episode.id, aux, 0);
+  await patchEpisodeBoard(episode.id, aux.board, 0);
+}
+
+async function createCharacterRow(character: Character): Promise<void> {
+  await fetch("/api/db/characters", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(character),
+  });
+}
+
+// 컷 에셋(4K 이미지/음성)은 서버 로컬 폴더가 아닌 Vercel Blob에 저장되므로
+// 영구 삭제 시 파일도 함께 정리해야 스토리지에 고아 파일이 남지 않는다.
 function collectAssetPaths(entry: TrashEntry): (string | undefined)[] {
   switch (entry.itemType) {
     case "cutAsset": {
       const { asset } = entry.payload as CutAssetTrashPayload;
       return [asset.fileUrl, asset.thumbnailUrl];
     }
+    case "boardImage": {
+      const { image } = entry.payload as BoardImageTrashPayload;
+      return [image.fileUrl, image.thumbnailUrl];
+    }
     case "episode": {
-      const { assets } = entry.payload as EpisodeTrashPayload;
-      return assets.flatMap((asset) => [asset.fileUrl, asset.thumbnailUrl]);
+      const { assets, board } = entry.payload as EpisodeTrashPayload;
+      return [
+        ...assets.flatMap((asset) => [asset.fileUrl, asset.thumbnailUrl]),
+        ...board.flatMap((image) => [image.fileUrl, image.thumbnailUrl]),
+      ];
     }
     case "series": {
       const { episodes } = entry.payload as SeriesTrashPayload;
-      return episodes.flatMap((ep) => ep.assets.flatMap((asset) => [asset.fileUrl, asset.thumbnailUrl]));
+      return episodes.flatMap((ep) => [
+        ...ep.assets.flatMap((asset) => [asset.fileUrl, asset.thumbnailUrl]),
+        ...ep.board.flatMap((image) => [image.fileUrl, image.thumbnailUrl]),
+      ]);
     }
     default:
       return [];
@@ -96,21 +168,15 @@ async function collectCharacterGalleryImages(characterId: string): Promise<Galle
   return records;
 }
 
-function collectEpisodeAuxData(episodeId: string) {
-  return {
-    cuts: readJson<Cut[]>(cutsKey(episodeId), []),
-    assets: readJson<CutAsset[]>(assetsKey(episodeId), []),
-    stylePreset: window.localStorage.getItem(stylePresetKey(episodeId)),
-  };
-}
-
 interface TrashContextValue {
   entries: TrashEntry[];
   hydrated: boolean;
   refresh: () => Promise<void>;
 
   captureCut: (episodeId: string, cut: Cut) => Promise<void>;
+  captureCutsSnapshot: (episodeId: string, cuts: Cut[]) => Promise<void>;
   captureCutAsset: (episodeId: string, asset: CutAsset) => Promise<void>;
+  captureBoardImage: (episodeId: string, image: BoardImage) => Promise<void>;
   captureGalleryImages: (images: GalleryImageMeta[]) => Promise<void>;
   captureCharacter: (character: Character) => Promise<void>;
   captureEpisode: (episode: Episode) => Promise<void>;
@@ -151,12 +217,33 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
         payload,
       });
 
-      const cuts = readJson<Cut[]>(cutsKey(episodeId), []);
-      writeJson(
-        cutsKey(episodeId),
-        cuts.filter((c) => c.id !== cut.id)
+      const aux = await fetchEpisodeAux(episodeId);
+      await patchEpisodeAux(
+        episodeId,
+        { cuts: aux.cuts.filter((c) => c.id !== cut.id) },
+        aux.cutsUpdatedAt
       );
 
+      await refresh();
+    },
+    [refresh]
+  );
+
+  // 원고를 다시 분할하면 기존 컷 전체가 새 분할 결과로 통째로 교체된다 — 실수로
+  // 눌렀을 때도 되돌릴 수 있도록, 교체되기 직전의 컷들을 서버에서는 지우지 않고
+  // (곧 setCuts로 덮어써질 것이므로) 휴지통에만 스냅샷으로 남겨둔다.
+  const captureCutsSnapshot = useCallback(
+    async (episodeId: string, cuts: Cut[]) => {
+      if (cuts.length === 0) return;
+      const entries: TrashEntry[] = cuts.map((cut) => ({
+        id: makeId("trash"),
+        itemType: "cut",
+        label: cut.dialogue || cut.directionNote || cut.scriptText || `컷 ${cut.cutNumber}`,
+        deletedAt: Date.now(),
+        originPath: { episodeId },
+        payload: { cut } as CutTrashPayload,
+      }));
+      await addTrashEntries(entries);
       await refresh();
     },
     [refresh]
@@ -174,10 +261,35 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
         payload,
       });
 
-      const assets = readJson<CutAsset[]>(assetsKey(episodeId), []);
-      writeJson(
-        assetsKey(episodeId),
-        assets.filter((a) => a.id !== asset.id)
+      const aux = await fetchEpisodeAux(episodeId);
+      await patchEpisodeAux(
+        episodeId,
+        { assets: aux.assets.filter((a) => a.id !== asset.id) },
+        aux.cutsUpdatedAt
+      );
+
+      await refresh();
+    },
+    [refresh]
+  );
+
+  const captureBoardImage = useCallback(
+    async (episodeId: string, image: BoardImage) => {
+      const payload: BoardImageTrashPayload = { image };
+      await addTrashEntry({
+        id: makeId("trash"),
+        itemType: "boardImage",
+        label: image.fileName,
+        deletedAt: Date.now(),
+        originPath: { episodeId },
+        payload,
+      });
+
+      const aux = await fetchEpisodeAux(episodeId);
+      await patchEpisodeBoard(
+        episodeId,
+        aux.board.filter((b) => b.id !== image.id),
+        aux.boardUpdatedAt
       );
 
       await refresh();
@@ -233,7 +345,8 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
 
   const captureEpisode = useCallback(
     async (episode: Episode) => {
-      const aux = collectEpisodeAuxData(episode.id);
+      const { cutsUpdatedAt: _cutsUpdatedAt, boardUpdatedAt: _boardUpdatedAt, ...aux } =
+        await fetchEpisodeAux(episode.id);
       const payload: EpisodeTrashPayload = { episode, ...aux };
       await addTrashEntry({
         id: makeId("trash"),
@@ -244,10 +357,8 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
         payload,
       });
 
-      window.localStorage.removeItem(cutsKey(episode.id));
-      window.localStorage.removeItem(assetsKey(episode.id));
-      window.localStorage.removeItem(stylePresetKey(episode.id));
-
+      // 회차 행 자체는 removeEpisode(DELETE /api/db/episodes/[id])가 곧 통째로 지우므로
+      // 여기서 별도로 cuts/assets를 지울 필요가 없다.
       await refresh();
     },
     [refresh]
@@ -255,10 +366,12 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
 
   const captureSeries = useCallback(
     async (series: Series, episodes: Episode[], characters: Character[]) => {
-      const episodePayloads: EpisodeTrashPayload[] = episodes.map((episode) => ({
-        episode,
-        ...collectEpisodeAuxData(episode.id),
-      }));
+      const episodePayloads: EpisodeTrashPayload[] = [];
+      for (const episode of episodes) {
+        const { cutsUpdatedAt: _cutsUpdatedAt, boardUpdatedAt: _boardUpdatedAt, ...aux } =
+          await fetchEpisodeAux(episode.id);
+        episodePayloads.push({ episode, ...aux });
+      }
 
       const characterPayloads: CharacterTrashPayload[] = [];
       for (const character of characters) {
@@ -282,11 +395,7 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
         payload,
       });
 
-      for (const episode of episodes) {
-        window.localStorage.removeItem(cutsKey(episode.id));
-        window.localStorage.removeItem(assetsKey(episode.id));
-        window.localStorage.removeItem(stylePresetKey(episode.id));
-      }
+      // 시리즈 행 삭제(removeSeries)가 DB 외래키 CASCADE로 회차까지 함께 지운다.
       for (const character of characters) {
         await deleteGalleryImagesForCharacter(character.id);
       }
@@ -301,18 +410,27 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
       case "cut": {
         const { cut } = entry.payload as CutTrashPayload;
         const episodeId = entry.originPath.episodeId;
-        const cuts = readJson<Cut[]>(cutsKey(episodeId), []);
-        if (!cuts.some((c) => c.id === cut.id)) {
-          writeJson(cutsKey(episodeId), [...cuts, cut]);
+        const aux = await fetchEpisodeAux(episodeId);
+        if (!aux.cuts.some((c) => c.id === cut.id)) {
+          await patchEpisodeAux(episodeId, { cuts: [...aux.cuts, cut] }, aux.cutsUpdatedAt);
         }
         break;
       }
       case "cutAsset": {
         const { asset } = entry.payload as CutAssetTrashPayload;
         const episodeId = entry.originPath.episodeId;
-        const assets = readJson<CutAsset[]>(assetsKey(episodeId), []);
-        if (!assets.some((a) => a.id === asset.id)) {
-          writeJson(assetsKey(episodeId), [...assets, asset]);
+        const aux = await fetchEpisodeAux(episodeId);
+        if (!aux.assets.some((a) => a.id === asset.id)) {
+          await patchEpisodeAux(episodeId, { assets: [...aux.assets, asset] }, aux.cutsUpdatedAt);
+        }
+        break;
+      }
+      case "boardImage": {
+        const { image } = entry.payload as BoardImageTrashPayload;
+        const episodeId = entry.originPath.episodeId;
+        const aux = await fetchEpisodeAux(episodeId);
+        if (!aux.board.some((b) => b.id === image.id)) {
+          await patchEpisodeBoard(episodeId, [...aux.board, image], aux.boardUpdatedAt);
         }
         break;
       }
@@ -323,54 +441,32 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
       }
       case "character": {
         const { character, galleryImages } = entry.payload as CharacterTrashPayload;
-        const characters = readJson<Character[]>(CHARACTERS_KEY, []);
-        if (!characters.some((c) => c.id === character.id)) {
-          writeJson(CHARACTERS_KEY, [...characters, character]);
-        }
+        await createCharacterRow(character);
         for (const image of galleryImages) {
           await restoreGalleryImage(image.meta, image.originalBlob);
         }
         break;
       }
       case "episode": {
-        const { episode, cuts, assets, stylePreset } = entry.payload as EpisodeTrashPayload;
-        const episodes = readJson<Episode[]>(EPISODES_KEY, []);
-        if (!episodes.some((e) => e.id === episode.id)) {
-          writeJson(EPISODES_KEY, [...episodes, episode]);
-        }
-        writeJson(cutsKey(episode.id), cuts);
-        writeJson(assetsKey(episode.id), assets);
-        if (stylePreset) window.localStorage.setItem(stylePresetKey(episode.id), stylePreset);
+        const { episode, cuts, assets, stylePreset, board } = entry.payload as EpisodeTrashPayload;
+        await createEpisodeRow(episode, { cuts, assets, stylePreset, board });
         break;
       }
       case "series": {
         const { series, episodes: episodePayloads, characters: characterPayloads } =
           entry.payload as SeriesTrashPayload;
 
-        const seriesList = readJson<Series[]>(SERIES_KEY, []);
-        if (!seriesList.some((s) => s.id === series.id)) {
-          writeJson(SERIES_KEY, [...seriesList, series]);
-        }
-
-        const episodesList = readJson<Episode[]>(EPISODES_KEY, []);
-        const newEpisodes = episodePayloads
-          .map((ep) => ep.episode)
-          .filter((episode) => !episodesList.some((e) => e.id === episode.id));
-        writeJson(EPISODES_KEY, [...episodesList, ...newEpisodes]);
-
+        await createSeriesRow(series);
         for (const ep of episodePayloads) {
-          writeJson(cutsKey(ep.episode.id), ep.cuts);
-          writeJson(assetsKey(ep.episode.id), ep.assets);
-          if (ep.stylePreset) window.localStorage.setItem(stylePresetKey(ep.episode.id), ep.stylePreset);
+          await createEpisodeRow(ep.episode, {
+            cuts: ep.cuts,
+            assets: ep.assets,
+            stylePreset: ep.stylePreset,
+            board: ep.board,
+          });
         }
-
-        const charactersList = readJson<Character[]>(CHARACTERS_KEY, []);
-        const newCharacters = characterPayloads
-          .map((cp) => cp.character)
-          .filter((character) => !charactersList.some((c) => c.id === character.id));
-        writeJson(CHARACTERS_KEY, [...charactersList, ...newCharacters]);
-
         for (const cp of characterPayloads) {
+          await createCharacterRow(cp.character);
           for (const image of cp.galleryImages) {
             await restoreGalleryImage(image.meta, image.originalBlob);
           }
@@ -413,7 +509,9 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
     hydrated,
     refresh,
     captureCut,
+    captureCutsSnapshot,
     captureCutAsset,
+    captureBoardImage,
     captureGalleryImages,
     captureCharacter,
     captureEpisode,

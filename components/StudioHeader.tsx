@@ -2,18 +2,20 @@
 
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ChevronRight, FileText, LayoutDashboard, Sparkles } from "lucide-react";
+import { ChevronRight, FileText, Images, LayoutDashboard, Sparkles } from "lucide-react";
 import { useSeries } from "@/context/SeriesContext";
 import { formatEpisodeLabel } from "@/lib/types";
 import BackupRestoreControls from "./BackupRestoreControls";
 import TrashButton from "./TrashButton";
 import StudioLogo from "./StudioLogo";
 
-// 이미지·오디오 에셋 관리가 모두 "에셋 스튜디오"(prompts) 화면 안 컷 카드로 들어가
-// 있어서, 별도 "에셋" 탭은 더 이상 없다.
+// 이미지·오디오 에셋 "생성/업로드"는 전부 "에셋 스튜디오"(prompts) 화면 안 컷 카드에서
+// 이뤄진다 — "이미지 갤러리"는 그 결과물을 컷 단위가 아니라 회차 전체 기준으로
+// 한눈에 모아보기 위한 별도 화면이다.
 const STUDIO_TABS = [
   { segment: "split", label: "원고 분할", icon: FileText },
   { segment: "prompts", label: "에셋 스튜디오", icon: Sparkles },
+  { segment: "gallery", label: "미디어 갤러리", icon: Images },
   { segment: "board", label: "진행 보드", icon: LayoutDashboard },
 ] as const;
 

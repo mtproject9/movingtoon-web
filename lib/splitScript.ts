@@ -59,7 +59,8 @@ function stripStrayQuoteChars(text: string): string {
 }
 
 // 지문/씬 라인의 신호가 되는 접두 키워드. 대괄호로 감싼 "[씬 5]" 형태도 인정한다.
-const DIRECTION_LABEL_PATTERN = /^\[?\s*(화면|씬|장면|효과음|bgm|scene|shot|cut|s#)/i;
+const DIRECTION_LABEL_PATTERN =
+  /^\[?\s*(화면|씬|장면|효과음|동작|행동|지문|내레이션|나레이션|액션|bgm|scene|shot|cut|s#)/i;
 
 const PAREN_PATTERN = /\(([^()]*)\)/g;
 
@@ -125,12 +126,21 @@ function extractParens(text: string): { clean: string; notes: string[] } {
   return { clean, notes };
 }
 
+// "(0:00~0:40)" 같은 시간 표기는 앞뒤가 숫자인 콜론이라, "이름:" 라벨 구분자가
+// 아니라 그냥 시각 표기다 — 이런 콜론은 후보에서 제외한다.
+function isClockColon(line: string, index: number): boolean {
+  const before = line[index - 1];
+  const after = line[index + 1];
+  return before !== undefined && after !== undefined && /\d/.test(before) && /\d/.test(after);
+}
+
 function findLabelColonIndex(line: string): number {
-  const half = line.indexOf(":");
-  const full = line.indexOf("：");
-  if (half === -1) return full;
-  if (full === -1) return half;
-  return Math.min(half, full);
+  for (let i = 0; i < line.length; i++) {
+    if ((line[i] === ":" || line[i] === "：") && !isClockColon(line, i)) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // Plain-prose fallback for lines with no "이름:" 콜론 구조 at all — 따옴표가 있으면
@@ -176,7 +186,10 @@ function classifyLine(rawLine: string): ParsedUnit[] {
   if (DIRECTION_LABEL_PATTERN.test(labelName)) {
     // 화면/씬/효과음/BGM 등 지문 라인: dialogue는 항상 빈 값, 전부 directionNote로.
     const { clean: contentClean, notes: contentNotes } = extractParens(afterColon);
-    const directionNote = (contentClean || afterColon).trim();
+    // "[동작: ...]"처럼 대괄호로 시작한 줄은 여는 "["가 beforeColon 쪽에서 소비돼도
+    // 닫는 "]"는 afterColon 끝에 그대로 남으므로 짝을 맞춰 제거한다.
+    const closingBracket = line.trim().startsWith("[") ? /\]\s*$/ : /^$/;
+    const directionNote = (contentClean || afterColon).replace(closingBracket, "").trim();
     const emotionSource = [...contentNotes, directionNote].filter(Boolean).join(" ") || line;
 
     return [
@@ -215,6 +228,28 @@ function classifyLine(rawLine: string): ParsedUnit[] {
   ];
 }
 
+// "지아 [곤히 잠든 소리, 평온하게]" / "박 대표 [기분 좋게 취해서]"처럼 콜론 없이
+// "이름 [감정/행동]"만 있는 화자 표시 줄. 이런 대본은 실제 대사가 콜론 없이 "다음
+// 줄(들)"에 온다 — 예:
+//   박 대표 [기분 좋은 듯 목소리를 높이며]
+//   그런 소문이 났어?
+//   허허.
+// 이름에는 "박 대표"처럼 공백이 섞인 이인칭 호칭도 올 수 있어 공백을 막지 않는다.
+// 대괄호로만 시작하는 순수 지문 줄("[동작: ...]")은 이름 부분이 없어 이 패턴에
+// 걸리지 않는다.
+const SPEAKER_CUE_PATTERN = /^([^[\]:：()]{1,20})\s*\[([^\]]+)\]\s*$/;
+
+// 화자 표시 줄 다음의 대사 줄이 통째로 괄호로 감싸진 경우(예: 속마음 독백을
+// "(이 인간이 왜 내 방에...?)"처럼 표기) 괄호 자체는 대사가 아니라 표기 방식이므로
+// 벗겨내고 안쪽 문장만 대사로 쓴다.
+function parseSpeakerCueContent(content: string): string {
+  const trimmed = content.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith("(") && trimmed.endsWith(")")) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function paragraphToUnits(paragraph: string): ParsedUnit[] {
   const lines = paragraph
     .split(/\n/)
@@ -222,16 +257,62 @@ function paragraphToUnits(paragraph: string): ParsedUnit[] {
     .filter(Boolean);
 
   const units: ParsedUnit[] = [];
+  let i = 0;
 
-  for (const line of lines) {
-    // 한 줄을 처리하다 예기치 못한 예외가 나도(문자열 파싱 로직이 아무리 방어적이어도
-    // 완전히 배제할 수는 없다) 그 줄만 건너뛰고 나머지 원고는 계속 분할되게 한다 —
-    // 줄 하나의 문제로 "컷으로 분할하기" 전체가 먹통이 되는 일을 막는다.
+  while (i < lines.length) {
+    const line = lines[i];
+    const cueMatch = line.match(SPEAKER_CUE_PATTERN);
+
+    // 한 줄(또는 화자 표시 줄+다음 줄)을 처리하다 예기치 못한 예외가 나도(문자열
+    // 파싱 로직이 아무리 방어적이어도 완전히 배제할 수는 없다) 그 부분만 건너뛰고
+    // 나머지 원고는 계속 분할되게 한다 — 줄 하나의 문제로 "컷으로 분할하기" 전체가
+    // 먹통이 되는 일을 막는다.
     try {
+      if (cueMatch) {
+        const name = cueMatch[1].trim();
+        const cue = cueMatch[2].trim();
+
+        // 화자 표시 줄 다음, 또 다른 화자 표시 줄이나 "이름:" 형식 라벨 줄이
+        // 나오기 전까지의 모든 줄을 이 화자의 이어지는 대사로 본다.
+        const contentLines: string[] = [];
+        let j = i + 1;
+        while (
+          j < lines.length &&
+          !SPEAKER_CUE_PATTERN.test(lines[j]) &&
+          findLabelColonIndex(lines[j]) === -1
+        ) {
+          const candidate = lines[j];
+          const isParenWrapped =
+            candidate.length >= 2 && candidate.startsWith("(") && candidate.endsWith(")");
+          // "(정적 2초)"처럼 대사 중간/뒤에 끼어드는 괄호 지문은 이어지는 대사로
+          // 합치지 않는다 — 단, 화자 표시 줄 바로 다음 줄(첫 줄)이 통째로 괄호인
+          // 경우는 속마음 독백 표기 관례이므로 그대로 대사로 받아들인다.
+          if (isParenWrapped && contentLines.length > 0) break;
+          contentLines.push(candidate);
+          j += 1;
+        }
+
+        if (contentLines.length > 0) {
+          const dialogueText = contentLines.map(parseSpeakerCueContent).join(" ");
+          units.push({
+            raw: [line, ...contentLines].join("\n"),
+            dialogue: `${name}: ${dialogueText}`,
+            directionNote: "",
+            emotionOverride: cue,
+            emotionSource: [cue, dialogueText].filter(Boolean).join(" ") || line,
+          });
+          i = j;
+          continue;
+        }
+        // 다음 줄이 없거나 전부 다른 형식이면 이 화자 표시 줄 자체는 아래
+        // classifyLine 경로로 넘겨 기존 방식대로(지문) 처리한다.
+      }
+
       units.push(...classifyLine(line));
     } catch (err) {
       console.warn("[splitScript] 줄 파싱 실패, 건너뜀:", line, err);
     }
+    i += 1;
   }
 
   return units;

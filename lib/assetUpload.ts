@@ -4,15 +4,6 @@ export interface UploadedAsset {
   fileName: string;
 }
 
-// "1.png", "cut_01.png", "Cut-12(final).jpg" 등 파일명에 포함된 첫 숫자를 컷 번호로 본다.
-// 일괄 드롭 시 파일명으로 컷을 자동 매칭하는 데 쓰인다.
-export function extractCutNumber(fileName: string): number | null {
-  const match = fileName.match(/\d+/);
-  if (!match) return null;
-  const n = Number.parseInt(match[0], 10);
-  return Number.isFinite(n) ? n : null;
-}
-
 const AUDIO_EXTENSIONS = /\.(mp3|wav|m4a)$/i;
 
 /** MIME이 브라우저/OS마다 비어 있거나 다르게 잡히는 경우(특히 .m4a)를 대비해

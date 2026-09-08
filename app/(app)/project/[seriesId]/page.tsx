@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Film, Plus, Trash2, UserRound } from "lucide-react";
+import { CheckCircle2, Film, Pencil, Plus, Trash2, UserRound, Video } from "lucide-react";
 import { useSeries } from "@/context/SeriesContext";
 import { useTrash } from "@/context/TrashContext";
 import { formatEpisodeLabel, type Episode } from "@/lib/types";
 import CharacterSheetPanel from "@/components/CharacterSheetPanel";
 import EpisodeModal from "@/components/EpisodeModal";
+import FinalVideoModal from "@/components/FinalVideoModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
 const TABS = [
@@ -21,11 +22,14 @@ type TabId = (typeof TABS)[number]["id"];
 export default function SeriesDetailPage() {
   const { seriesId } = useParams<{ seriesId: string }>();
   const router = useRouter();
-  const { hydrated, getSeries, getEpisodesForSeries, addEpisode, removeEpisode } = useSeries();
+  const { hydrated, getSeries, getEpisodesForSeries, addEpisode, updateEpisode, removeEpisode } =
+    useSeries();
   const { captureEpisode } = useTrash();
   const [activeTab, setActiveTab] = useState<TabId>("episodes");
   const [isEpisodeModalOpen, setIsEpisodeModalOpen] = useState(false);
   const [episodePendingDelete, setEpisodePendingDelete] = useState<Episode | null>(null);
+  const [videoModalEpisode, setVideoModalEpisode] = useState<Episode | null>(null);
+  const [renameEpisode, setRenameEpisode] = useState<Episode | null>(null);
 
   const series = getSeries(seriesId);
   const episodes = getEpisodesForSeries(seriesId);
@@ -128,14 +132,42 @@ export default function SeriesDetailPage() {
                         </p>
                       </div>
                     </div>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setVideoModalEpisode(episode);
+                      }}
+                      className={`flex items-center gap-1.5 self-start rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                        episode.finalVideoUrl
+                          ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
+                          : "border border-slate-200 text-slate-400 hover:bg-slate-50"
+                      }`}
+                    >
+                      {episode.finalVideoUrl ? (
+                        <CheckCircle2 className="h-3 w-3" />
+                      ) : (
+                        <Video className="h-3 w-3" />
+                      )}
+                      {episode.finalVideoUrl ? "완성 영상 등록됨" : "완성 영상 등록"}
+                    </button>
                   </Link>
-                  <button
-                    onClick={() => setEpisodePendingDelete(episode)}
-                    title="회차 삭제"
-                    className="absolute right-2 top-2 hidden rounded-full bg-white/90 p-1.5 text-slate-400 shadow-sm hover:text-red-500 group-hover:block"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="absolute right-2 top-2 hidden items-center gap-1 group-hover:flex">
+                    <button
+                      onClick={() => setRenameEpisode(episode)}
+                      title="회차 제목 수정"
+                      className="rounded-full bg-white/90 p-1.5 text-slate-400 shadow-sm hover:text-rose-500"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setEpisodePendingDelete(episode)}
+                      title="회차 삭제"
+                      className="rounded-full bg-white/90 p-1.5 text-slate-400 shadow-sm hover:text-red-500"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -153,12 +185,33 @@ export default function SeriesDetailPage() {
         />
       )}
 
+      {renameEpisode && (
+        <EpisodeModal
+          defaultTitle={renameEpisode.title}
+          heading={`${formatEpisodeLabel(renameEpisode)} 제목 수정`}
+          submitLabel="저장"
+          onClose={() => setRenameEpisode(null)}
+          onSubmit={(title) => {
+            updateEpisode(renameEpisode.id, { title: title.trim() || renameEpisode.title });
+            setRenameEpisode(null);
+          }}
+        />
+      )}
+
       {episodePendingDelete && (
         <ConfirmDialog
           title="회차를 삭제할까요?"
           message={`${formatEpisodeLabel(episodePendingDelete)}의 모든 컷과 에셋이 함께 휴지통으로 이동합니다. 휴지통에서 다시 복원할 수 있습니다.`}
           onConfirm={() => void handleConfirmDeleteEpisode()}
           onCancel={() => setEpisodePendingDelete(null)}
+        />
+      )}
+
+      {videoModalEpisode && (
+        <FinalVideoModal
+          episode={videoModalEpisode}
+          onClose={() => setVideoModalEpisode(null)}
+          onSave={(url) => updateEpisode(videoModalEpisode.id, { finalVideoUrl: url })}
         />
       )}
     </div>

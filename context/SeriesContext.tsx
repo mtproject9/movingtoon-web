@@ -12,8 +12,6 @@ import type { Character, Episode, Series } from "@/lib/types";
 
 interface SeriesContextValue {
   hydrated: boolean;
-  // 백업 복원처럼 localStorage를 외부에서(React state를 거치지 않고) 직접 바꾼 뒤
-  // 새로고침 없이 화면을 최신 상태로 맞추기 위한 강제 재로딩.
   reloadFromStorage: () => void;
 
   seriesList: Series[];
@@ -41,102 +39,45 @@ interface SeriesContextValue {
 
 const SeriesContext = createContext<SeriesContextValue | null>(null);
 
-const SERIES_KEY = "movingtoon:series";
-const EPISODES_KEY = "movingtoon:episodes";
-const CHARACTERS_KEY = "movingtoon:characters";
-const MIGRATION_MARKER_KEY = "movingtoon:migrated:demo-v1";
-
-// 멀티 시리즈 구조로 개편되기 전, 단일 데모 프로젝트("demo")로 저장되어 있던
-// 로컬 데이터를 최초 1회 "데모 시리즈 / 1화"로 자동 이전한다.
-function migrateLegacyDemoData() {
-  if (window.localStorage.getItem(MIGRATION_MARKER_KEY)) return;
-
-  const legacyCutsRaw = window.localStorage.getItem("movingtoon:demo:cuts");
-  const legacyCharactersRaw = window.localStorage.getItem("movingtoon:demo:characters");
-  const legacyAssetsRaw = window.localStorage.getItem("movingtoon:demo:assets");
-  const legacyPresetRaw = window.localStorage.getItem("movingtoon:demo:stylePreset");
-
-  const hasLegacyData = legacyCutsRaw || legacyCharactersRaw || legacyAssetsRaw;
-  if (!hasLegacyData) {
-    window.localStorage.setItem(MIGRATION_MARKER_KEY, "1");
-    return;
-  }
-
-  const seriesId = makeId("series");
-  const episodeId = makeId("ep");
-
-  const series: Series = {
-    id: seriesId,
-    title: "데모 시리즈",
-    logline: "멀티 시리즈 구조로 개편되기 전 기존 데모 프로젝트에서 자동으로 이전되었습니다.",
-    thumbnail: "",
-    createdAt: Date.now(),
-  };
-  const episode: Episode = {
-    id: episodeId,
-    seriesId,
-    title: "1화",
-    episodeNumber: 1,
-    createdAt: Date.now(),
-  };
-
-  if (legacyCutsRaw) {
-    window.localStorage.setItem(`movingtoon:${episodeId}:cuts`, legacyCutsRaw);
-    window.localStorage.removeItem("movingtoon:demo:cuts");
-  }
-  if (legacyAssetsRaw) {
-    window.localStorage.setItem(`movingtoon:${episodeId}:assets`, legacyAssetsRaw);
-    window.localStorage.removeItem("movingtoon:demo:assets");
-  }
-  if (legacyPresetRaw) {
-    window.localStorage.setItem(`movingtoon:${episodeId}:stylePreset`, legacyPresetRaw);
-    window.localStorage.removeItem("movingtoon:demo:stylePreset");
-  }
-
-  let migratedCharacters: Character[] = [];
-  if (legacyCharactersRaw) {
-    try {
-      const parsed = JSON.parse(legacyCharactersRaw) as Omit<Character, "seriesId">[];
-      migratedCharacters = parsed.map((character) => ({ ...character, seriesId }));
-    } catch {
-      // 손상된 데이터는 이전하지 않고 건너뛴다
-    }
-    window.localStorage.removeItem("movingtoon:demo:characters");
-  }
-
-  const existingSeries = readJson<Series[]>(SERIES_KEY, []);
-  const existingEpisodes = readJson<Episode[]>(EPISODES_KEY, []);
-  const existingCharacters = readJson<Character[]>(CHARACTERS_KEY, []);
-
-  window.localStorage.setItem(SERIES_KEY, JSON.stringify([...existingSeries, series]));
-  window.localStorage.setItem(EPISODES_KEY, JSON.stringify([...existingEpisodes, episode]));
-  window.localStorage.setItem(
-    CHARACTERS_KEY,
-    JSON.stringify([...existingCharacters, ...migratedCharacters])
-  );
-  window.localStorage.setItem(MIGRATION_MARKER_KEY, "1");
-}
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function isQuotaExceededError(error: unknown): boolean {
-  return (
-    error instanceof DOMException &&
-    (error.name === "QuotaExceededError" ||
-      error.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
-      error.code === 22)
-  );
+// 서버 저장은 네트워크 요청이라 실패할 수 있다 — 화면은 이미 낙관적으로 갱신된
+// 뒤이므로, 실패해도 조용히 무시하지 않고 사용자에게 알려 새로고침 시 유실 가능성을 알린다.
+async function postJson(url: string, body: unknown, onError: (msg: string) => void) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) onError("서버에 저장하지 못했습니다. 인터넷 연결을 확인해주세요.");
+  } catch {
+    onError("서버에 저장하지 못했습니다. 인터넷 연결을 확인해주세요.");
+  }
+}
+
+async function patchJson(url: string, body: unknown, onError: (msg: string) => void) {
+  try {
+    const res = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) onError("서버에 저장하지 못했습니다. 인터넷 연결을 확인해주세요.");
+  } catch {
+    onError("서버에 저장하지 못했습니다. 인터넷 연결을 확인해주세요.");
+  }
+}
+
+async function deleteJson(url: string, onError: (msg: string) => void) {
+  try {
+    const res = await fetch(url, { method: "DELETE" });
+    if (!res.ok) onError("서버에서 삭제하지 못했습니다. 인터넷 연결을 확인해주세요.");
+  } catch {
+    onError("서버에서 삭제하지 못했습니다. 인터넷 연결을 확인해주세요.");
+  }
 }
 
 export function SeriesProvider({ children }: { children: React.ReactNode }) {
@@ -146,20 +87,7 @@ export function SeriesProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
 
-  const safeSetItem = useCallback((key: string, value: string) => {
-    try {
-      window.localStorage.setItem(key, value);
-    } catch (error) {
-      // 저장 공간이 가득 차 setItem이 실패해도 앱이 멈추지 않도록 막고, 사용자에게
-      // 알린다 — 이 시점에는 이미 React state는 갱신된 뒤라 화면상으로는 반영돼
-      // 보이지만 새로고침하면 유실될 수 있어 저장 실패를 반드시 알려야 한다.
-      setStorageError(
-        isQuotaExceededError(error)
-          ? "저장 공간이 가득 찼습니다. 썸네일 용량을 줄이거나 사용하지 않는 시리즈를 삭제해주세요."
-          : "데이터를 저장하지 못했습니다. 새로고침하면 방금 변경한 내용이 사라질 수 있습니다."
-      );
-    }
-  }, []);
+  const showError = useCallback((msg: string) => setStorageError(msg), []);
 
   useEffect(() => {
     if (!storageError) return;
@@ -167,63 +95,68 @@ export function SeriesProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [storageError]);
 
-  useEffect(() => {
-    migrateLegacyDemoData();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSeriesList(readJson<Series[]>(SERIES_KEY, []));
-    setEpisodes(readJson<Episode[]>(EPISODES_KEY, []));
-    setCharacters(readJson<Character[]>(CHARACTERS_KEY, []));
-    setHydrated(true);
-  }, []);
+  const loadAll = useCallback(async () => {
+    try {
+      const res = await fetch("/api/db/bootstrap");
+      if (!res.ok) throw new Error("bootstrap failed");
+      const data = (await res.json()) as {
+        series: Series[];
+        episodes: Episode[];
+        characters: Character[];
+      };
+      setSeriesList(data.series);
+      setEpisodes(data.episodes);
+      setCharacters(data.characters);
+    } catch {
+      showError("서버에서 데이터를 불러오지 못했습니다. 새로고침해주세요.");
+    } finally {
+      setHydrated(true);
+    }
+  }, [showError]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    // safeSetItem은 성공 경로에서는 setState를 호출하지 않고, 저장 실패(용량 초과 등)
-    // 시에만 사용자 알림용 storageError를 설정한다.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    safeSetItem(SERIES_KEY, JSON.stringify(seriesList));
-  }, [seriesList, hydrated, safeSetItem]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    safeSetItem(EPISODES_KEY, JSON.stringify(episodes));
-  }, [episodes, hydrated, safeSetItem]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    safeSetItem(CHARACTERS_KEY, JSON.stringify(characters));
-  }, [characters, hydrated, safeSetItem]);
+    void loadAll();
+  }, [loadAll]);
 
   const reloadFromStorage = useCallback(() => {
-    setSeriesList(readJson<Series[]>(SERIES_KEY, []));
-    setEpisodes(readJson<Episode[]>(EPISODES_KEY, []));
-    setCharacters(readJson<Character[]>(CHARACTERS_KEY, []));
-  }, []);
+    void loadAll();
+  }, [loadAll]);
 
   const getSeries = useCallback(
     (id: string) => seriesList.find((series) => series.id === id) ?? null,
     [seriesList]
   );
 
-  const addSeries = useCallback((data: Omit<Series, "id" | "createdAt">) => {
-    const series: Series = { ...data, id: makeId("series"), createdAt: Date.now() };
-    setSeriesList((prev) => [...prev, series]);
-    return series;
-  }, []);
+  const addSeries = useCallback(
+    (data: Omit<Series, "id" | "createdAt">) => {
+      const series: Series = { ...data, id: makeId("series"), createdAt: Date.now() };
+      setSeriesList((prev) => [...prev, series]);
+      void postJson("/api/db/series", series, showError);
+      return series;
+    },
+    [showError]
+  );
 
-  const updateSeries = useCallback((id: string, patch: Partial<Series>) => {
-    setSeriesList((prev) =>
-      prev.map((series) => (series.id === id ? { ...series, ...patch } : series))
-    );
-  }, []);
+  const updateSeries = useCallback(
+    (id: string, patch: Partial<Series>) => {
+      setSeriesList((prev) =>
+        prev.map((series) => (series.id === id ? { ...series, ...patch } : series))
+      );
+      void patchJson(`/api/db/series/${id}`, patch, showError);
+    },
+    [showError]
+  );
 
-  const removeSeries = useCallback((id: string) => {
-    setSeriesList((prev) => prev.filter((series) => series.id !== id));
-    setEpisodes((prev) => prev.filter((episode) => episode.seriesId !== id));
-    setCharacters((prev) => prev.filter((character) => character.seriesId !== id));
-  }, []);
+  const removeSeries = useCallback(
+    (id: string) => {
+      setSeriesList((prev) => prev.filter((series) => series.id !== id));
+      setEpisodes((prev) => prev.filter((episode) => episode.seriesId !== id));
+      setCharacters((prev) => prev.filter((character) => character.seriesId !== id));
+      void deleteJson(`/api/db/series/${id}`, showError);
+    },
+    [showError]
+  );
 
   const getEpisode = useCallback(
     (id: string) => episodes.find((episode) => episode.id === id) ?? null,
@@ -249,20 +182,29 @@ export function SeriesProvider({ children }: { children: React.ReactNode }) {
         createdAt: Date.now(),
       };
       setEpisodes((prev) => [...prev, episode]);
+      void postJson("/api/db/episodes", episode, showError);
       return episode;
     },
-    [episodes]
+    [episodes, showError]
   );
 
-  const updateEpisode = useCallback((id: string, patch: Partial<Episode>) => {
-    setEpisodes((prev) =>
-      prev.map((episode) => (episode.id === id ? { ...episode, ...patch } : episode))
-    );
-  }, []);
+  const updateEpisode = useCallback(
+    (id: string, patch: Partial<Episode>) => {
+      setEpisodes((prev) =>
+        prev.map((episode) => (episode.id === id ? { ...episode, ...patch } : episode))
+      );
+      void patchJson(`/api/db/episodes/${id}`, patch, showError);
+    },
+    [showError]
+  );
 
-  const removeEpisode = useCallback((id: string) => {
-    setEpisodes((prev) => prev.filter((episode) => episode.id !== id));
-  }, []);
+  const removeEpisode = useCallback(
+    (id: string) => {
+      setEpisodes((prev) => prev.filter((episode) => episode.id !== id));
+      void deleteJson(`/api/db/episodes/${id}`, showError);
+    },
+    [showError]
+  );
 
   const getCharactersForSeries = useCallback(
     (seriesId: string) => characters.filter((character) => character.seriesId === seriesId),
@@ -278,20 +220,29 @@ export function SeriesProvider({ children }: { children: React.ReactNode }) {
         createdAt: Date.now(),
       };
       setCharacters((prev) => [...prev, character]);
+      void postJson("/api/db/characters", character, showError);
       return character;
     },
-    []
+    [showError]
   );
 
-  const updateCharacter = useCallback((id: string, patch: Partial<Character>) => {
-    setCharacters((prev) =>
-      prev.map((character) => (character.id === id ? { ...character, ...patch } : character))
-    );
-  }, []);
+  const updateCharacter = useCallback(
+    (id: string, patch: Partial<Character>) => {
+      setCharacters((prev) =>
+        prev.map((character) => (character.id === id ? { ...character, ...patch } : character))
+      );
+      void patchJson(`/api/db/characters/${id}`, patch, showError);
+    },
+    [showError]
+  );
 
-  const removeCharacter = useCallback((id: string) => {
-    setCharacters((prev) => prev.filter((character) => character.id !== id));
-  }, []);
+  const removeCharacter = useCallback(
+    (id: string) => {
+      setCharacters((prev) => prev.filter((character) => character.id !== id));
+      void deleteJson(`/api/db/characters/${id}`, showError);
+    },
+    [showError]
+  );
 
   const value: SeriesContextValue = {
     hydrated,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Trash2, X } from "lucide-react";
+import { BookmarkPlus, ChevronLeft, ChevronRight, Download, Star, Trash2, X } from "lucide-react";
 import type { CutAsset } from "@/lib/types";
 
 // fileUrl이 서버 정적 경로(/uploads/...) 또는 data URL이라 galleryDb의 LightboxModal과
@@ -12,12 +12,20 @@ export default function CutAssetLightbox({
   onClose,
   onDownload,
   onDelete,
+  onAddToBoard,
+  onToggleLock,
 }: {
   assets: CutAsset[];
   startIndex: number;
   onClose: () => void;
   onDownload: (asset: CutAsset) => void;
   onDelete: (asset: CutAsset) => void;
+  // 회차 화면마다 "진행 보드"와의 연동 방식이 다를 수 있어(예: 갤러리는 필요, 다른
+  // 화면은 이미 자체 버튼이 있어 불필요) 선택적으로만 받는다.
+  onAddToBoard?: (asset: CutAsset) => void;
+  // 삭제 잠금도 갤러리 화면에서만 필요해 선택적으로만 받는다 — 넘겨받을 때만
+  // 별 아이콘과 잠금 상태에서의 삭제 비활성화를 보여준다.
+  onToggleLock?: (asset: CutAsset) => void;
 }) {
   const [index, setIndex] = useState(startIndex);
   const current = assets[index];
@@ -55,20 +63,42 @@ export default function CutAssetLightbox({
           {index + 1} / {assets.length} · {current.fileName} · v{current.version}
         </span>
         <div className="flex items-center gap-1">
+          {onToggleLock && (
+            <button
+              onClick={() => onToggleLock(current)}
+              title={current.locked ? "삭제 잠금 해제" : "삭제 잠금"}
+              className={`rounded-full p-2 hover:bg-white/10 ${
+                current.locked ? "text-rose-400" : "text-slate-200"
+              }`}
+            >
+              <Star className="h-5 w-5" fill={current.locked ? "currentColor" : "none"} />
+            </button>
+          )}
+          {onAddToBoard && (
+            <button
+              onClick={() => onAddToBoard(current)}
+              title="진행 보드(최종 이미지 모음)에 추가"
+              className="rounded-full p-2 text-slate-200 hover:bg-white/10"
+            >
+              <BookmarkPlus className="h-5 w-5" />
+            </button>
+          )}
           <button
             onClick={() => onDownload(current)}
-            title="4K 원본 다운로드"
+            title="원본 다운로드"
             className="rounded-full p-2 text-slate-200 hover:bg-white/10"
           >
             <Download className="h-5 w-5" />
           </button>
-          <button
-            onClick={() => onDelete(current)}
-            title="삭제"
-            className="rounded-full p-2 text-slate-200 hover:bg-red-500/20 hover:text-red-300"
-          >
-            <Trash2 className="h-5 w-5" />
-          </button>
+          {!current.locked && (
+            <button
+              onClick={() => onDelete(current)}
+              title="삭제"
+              className="rounded-full p-2 text-slate-200 hover:bg-red-500/20 hover:text-red-300"
+            >
+              <Trash2 className="h-5 w-5" />
+            </button>
+          )}
           <button
             onClick={onClose}
             title="닫기"

@@ -3,30 +3,7 @@
 import { Film } from "lucide-react";
 import { useCuts } from "@/context/CutsContext";
 import { formatCutLabel } from "@/lib/types";
-import type { Cut } from "@/lib/types";
 import StatusBadge from "./StatusBadge";
-
-function PromptApprovalBadge({ cut }: { cut: Cut }) {
-  if (cut.imageUrl) {
-    return (
-      <span className="rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
-        이미지 완료
-      </span>
-    );
-  }
-  if (cut.isPromptApproved) {
-    return (
-      <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
-        프롬프트 승인
-      </span>
-    );
-  }
-  return (
-    <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
-      원고
-    </span>
-  );
-}
 
 export default function CutListSidebar() {
   const { cuts, selectedCutId, setSelectedCutId } = useCuts();
@@ -75,27 +52,16 @@ export default function CutListSidebar() {
                     : "border-transparent hover:bg-slate-50"
                 }`}
               >
-                <div className="flex items-center gap-2">
-                  {cut.imageUrl && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={cut.imageUrl}
-                      alt=""
-                      className="h-10 w-7 shrink-0 rounded object-cover"
-                    />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <span className="text-sm font-semibold text-slate-700">
-                      {formatCutLabel(cut.cutNumber)}
-                    </span>
-                    <p className="line-clamp-2 text-xs text-slate-500">
-                      {cut.dialogue || cut.directionNote || cut.scriptText}
-                    </p>
-                  </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-semibold text-slate-700">
+                    {formatCutLabel(cut.cutNumber)}
+                  </span>
+                  <p className="line-clamp-2 text-xs text-slate-500">
+                    {cut.dialogue || cut.directionNote || cut.scriptText}
+                  </p>
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-1">
                   <StatusBadge status={cut.status} />
-                  <PromptApprovalBadge cut={cut} />
                 </div>
               </button>
             </li>

@@ -1,3 +1,5 @@
+import type { StylePreset } from "./types";
+
 export const BASE_STYLE_TAGS =
   "Korean romance webtoon style, anime aesthetic, soft warm lighting, dreamy atmosphere, vibrant pastel colors, 8k resolution, highly detailed beautiful eyes, expressive facial emotion, fluttery romantic vibe";
 
@@ -72,13 +74,6 @@ export function detectEmotion(text: string) {
   return found ?? DEFAULT_EMOTION;
 }
 
-export interface StylePreset {
-  id: string;
-  label: string;
-  descriptionKo: string;
-  styleTagsEn: string;
-}
-
 export const STYLE_PRESETS: StylePreset[] = [
   {
     id: "modern-romance-webtoon",
@@ -103,8 +98,15 @@ export const STYLE_PRESETS: StylePreset[] = [
   },
 ];
 
-export function getStylePreset(id: string | undefined): StylePreset {
-  return STYLE_PRESETS.find((preset) => preset.id === id) ?? STYLE_PRESETS[0];
+export function getStylePreset(
+  id: string | undefined,
+  customPresets: StylePreset[] = []
+): StylePreset {
+  return (
+    STYLE_PRESETS.find((preset) => preset.id === id) ??
+    customPresets.find((preset) => preset.id === id) ??
+    STYLE_PRESETS[0]
+  );
 }
 
 // "연수: 오빠, 나 좀 봐봐." 형식의 대사에서 앞부분 화자 이름만 뽑아낸다.
@@ -119,6 +121,9 @@ export interface CutPromptInput {
   expression: string;
   cameraAngle: string;
   directionNote: string;
+  // directionNote의 번역 캐시. 없으면(아직 번역 전) 영문 프롬프트에서는 그냥
+  // 비워둔다 — 번역 안 된 한글 원문을 영문 프롬프트에 그대로 흘려보내지 않기 위해.
+  directionNoteEn?: string;
 }
 
 export interface CutPrompt {
@@ -140,13 +145,17 @@ export interface CharacterAppearance {
 export function buildCutPrompt(
   cut: CutPromptInput,
   presetId: string | undefined,
-  character?: CharacterAppearance
+  character?: CharacterAppearance,
+  customPresets: StylePreset[] = []
 ): CutPrompt {
-  const preset = getStylePreset(presetId);
+  const preset = getStylePreset(presetId, customPresets);
   const emotion = detectEmotion(`${cut.emotionTag} ${cut.expression} ${cut.dialogue}`);
   const speaker = extractSpeakerName(cut.dialogue);
   const cameraAngle = cut.cameraAngle || DEFAULT_CAMERA_ANGLE;
-  const sceneAction = cut.directionNote.trim();
+  const sceneActionKo = cut.directionNote.trim();
+  // 번역 전이면 빈 문자열로 둔다 — 한글 원문을 영문 프롬프트에 그대로 끼워 넣으면
+  // 이미지 생성 모델이 그 부분을 제대로 이해하지 못한다.
+  const sceneActionEn = (cut.directionNoteEn ?? "").trim();
 
   // 캐릭터 시트에 등록된 인물이면 일관성 유지를 위해 헤어/눈/의상 태그를 우선 사용하고,
   // 등록되지 않은 인물이면 일반적인 캐릭터 문구로 대체한다.
@@ -164,76 +173,27 @@ export function buildCutPrompt(
     appearanceEn,
     emotion.expressionEn,
     cameraAngle,
-    sceneAction,
+    sceneActionEn,
   ]
     .filter(Boolean)
     .join(", ");
 
+  // 영문 프롬프트와 마찬가지로 순수하게 "그림에 어떻게 보여야 하는가"만 담는다 —
+  // 대사(말풍선에 들어갈 텍스트)는 이미지 생성과 무관한 정보라 영문 쪽엔 애초에
+  // 없었는데, 한글 쪽에만 맨 끝에 붙어 있어 두 프롬프트가 서로 다른 내용을
+  // 담게 되는 불일치가 있었다 — 제거해 둘을 같은 내용의 번역 관계로 맞춘다.
   const promptKo = [
     preset.descriptionKo,
     speaker,
     cut.emotionTag ? `[${cut.emotionTag}]` : "",
     cut.expression,
     cameraAngle ? `${cameraAngle} 구도` : "",
-    sceneAction,
-    cut.dialogue,
+    sceneActionKo,
   ]
     .filter(Boolean)
     .join(" / ");
 
   return { promptEn, promptKo, negativePrompt: DEFAULT_NEGATIVE_PROMPT };
-}
-
-// 로컬 템플릿은 컷 필드가 그대로면 매번 똑같은 문자열을 만들어 "재생성" 버튼을 눌러도
-// 아무것도 안 바뀐 것처럼 보인다 — 화풍 수식어/조명/분위기를 매 호출마다 무작위로 골라
-// 눌러줄 때마다 다른 결과가 나오도록 한다.
-const STYLE_MODIFIERS = [
-  "high quality digital illustration",
-  "richly detailed digital illustration",
-  "polished webtoon-style illustration",
-  "vibrant clean-line digital illustration",
-  "delicately rendered digital illustration",
-  "crisp modern webtoon illustration",
-];
-
-const LIGHTING_VARIANTS = [
-  "soft cinematic lighting",
-  "warm golden-hour lighting",
-  "moody rim lighting with soft shadows",
-  "dramatic backlighting",
-  "gentle diffused studio lighting",
-  "soft pastel ambient lighting",
-];
-
-const MOOD_MODIFIERS = [
-  "cinematic mood",
-  "dreamy romantic atmosphere",
-  "quiet emotional tension",
-  "bittersweet mood",
-  "warm intimate atmosphere",
-  "subtle dramatic tension",
-];
-
-function pickRandom<T>(options: T[]): T {
-  return options[Math.floor(Math.random() * options.length)];
-}
-
-/**
- * 원고 분할 화면 우측 패널용 AI 이미지 프롬프트 로컬 템플릿 헬퍼. Gemini API 키가
- * 없거나 호출이 실패했을 때 즉시 쓰는 폴백이라 별도 번역 사전/네트워크 호출 없이
- * 컷 필드를 그대로 문자열에 꽂아 넣는다 — 항상 동기적으로, 즉시 결과를 낸다.
- * 화풍/조명/분위기 수식어는 매 호출마다 무작위로 골라, "재생성" 버튼을 반복해서
- * 눌러도 컷 필드가 그대로여도 매번 다른 문장이 나온다.
- */
-export function buildSplitImagePrompt(cut: CutPromptInput): string {
-  const scene = cut.directionNote.trim() || "two characters";
-  const expression = cut.emotionTag.trim() || cut.expression.trim() || "neutral";
-  const cameraAngle = cut.cameraAngle.trim() || "close-up";
-  const style = pickRandom(STYLE_MODIFIERS);
-  const lighting = pickRandom(LIGHTING_VARIANTS);
-  const mood = pickRandom(MOOD_MODIFIERS);
-
-  return `Webtoon romance manhwa style, ${style}, scene: ${scene}, character expression: ${expression}, camera angle: ${cameraAngle}, ${lighting}, ${mood}, 8k resolution, vertical 9:16 webtoon frame`;
 }
 
 export const MIDJOURNEY_ASPECT_RATIO = "--ar 16:9";
@@ -263,14 +223,35 @@ export function matchSpeakerCharacter(
   return characters.find((character) => character.name.trim() === speaker.trim()) ?? null;
 }
 
+/** 대사 화자뿐 아니라 연출 메모에 언급된 다른 인물까지, 이 컷에 실제로 등장하는
+ *  캐릭터를 전부 이름으로 찾아낸다. 이미지 생성 시 참조 이미지로 등록된 캐릭터
+ *  전체가 아니라 이 컷에 나오는 인물만 보내기 위함 — 화자가 있으면 배열 맨 앞에 둔다. */
+export function matchCutCharacters(
+  cut: { dialogue: string; directionNote: string },
+  characters: CharacterAppearance[]
+): CharacterAppearance[] {
+  const haystack = `${cut.dialogue} ${cut.directionNote}`;
+  const matched = characters.filter((character) => {
+    const name = character.name.trim();
+    return name.length > 0 && haystack.includes(name);
+  });
+  const speaker = extractSpeakerName(cut.dialogue).trim();
+  return matched.sort((a, b) => {
+    if (a.name.trim() === speaker) return -1;
+    if (b.name.trim() === speaker) return 1;
+    return 0;
+  });
+}
+
 /** 대사 화자를 캐릭터 시트와 매칭해 프롬프트를 만들고, 사용자가 직접 수정한 값이 있으면 그걸 우선한다. */
 export function resolveCutPrompt(
   cut: ResolvableCut,
   presetId: string | undefined,
-  characters: CharacterAppearance[]
+  characters: CharacterAppearance[],
+  customPresets: StylePreset[] = []
 ): CutPrompt {
   const matchedCharacter = matchSpeakerCharacter(cut.dialogue, characters);
-  const generated = buildCutPrompt(cut, presetId, matchedCharacter ?? undefined);
+  const generated = buildCutPrompt(cut, presetId, matchedCharacter ?? undefined, customPresets);
 
   return {
     promptEn: cut.promptEn ?? generated.promptEn,
