@@ -6,7 +6,6 @@ import { useSeries } from "@/context/SeriesContext";
 import { useTrash } from "@/context/TrashContext";
 import type { Character } from "@/lib/types";
 import { addGalleryImages } from "@/lib/galleryDb";
-import { readFileAsDataUrl } from "@/lib/files";
 import CharacterModal, { type CharacterFormValues } from "./CharacterModal";
 import CharacterGalleryModal from "./CharacterGalleryModal";
 import ConfirmDialog from "./ConfirmDialog";
@@ -46,8 +45,7 @@ export default function CharacterSheetPanel({ seriesId }: { seriesId: string }) 
     if (referenceImages && referenceImages.length > 0) {
       const uploaded = await addGalleryImages(created.id, referenceImages);
       if (uploaded[0]) {
-        const dataUrl = await readFileAsDataUrl(uploaded[0].thumbnailBlob);
-        updateCharacter(created.id, { profileImage: dataUrl });
+        updateCharacter(created.id, { profileImage: uploaded[0].thumbnailUrl });
       }
     }
   }

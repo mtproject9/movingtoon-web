@@ -130,13 +130,17 @@ export interface BoardImage {
   upscaledUrl?: string;
 }
 
-// 캐릭터 참조 이미지(최대 100장)는 용량이 커 localStorage가 아닌 IndexedDB(lib/galleryDb.ts)에
-// 저장한다. 이 타입은 그 레코드 중 목록 렌더링에 필요한 메타데이터 + 썸네일만 담는다.
+// 캐릭터 참조 이미지(최대 100장)는 서버(Postgres 메타데이터 + Vercel Blob 파일)에
+// 저장한다. 브라우저 로컬(IndexedDB)에만 있으면 다른 기기/브라우저에서는 안 보이는
+// 문제가 있어, 어디서 접속하든 똑같이 보이도록 서버로 옮겼다(lib/galleryDb.ts).
 export interface GalleryImageMeta {
   id: string;
   characterId: string;
   fileName: string;
-  thumbnailBlob: Blob;
+  // 그리드/휴지통 미리보기용 320px 썸네일의 공개 URL.
+  thumbnailUrl: string;
+  // 원본 화질 파일의 공개 URL — 다운로드/라이트박스에서 쓴다.
+  fileUrl: string;
   originalWidth: number;
   originalHeight: number;
   order: number;
@@ -144,7 +148,9 @@ export interface GalleryImageMeta {
 }
 
 // ── 휴지통(soft delete) ──────────────────────────────────────────────
-// 삭제된 항목은 즉시 지우지 않고 IndexedDB(lib/trashDb.ts)의 휴지통 저장소로 옮긴다.
+// 삭제된 항목은 즉시 지우지 않고 서버 DB(lib/trashDb.ts, trash_entries 테이블)의
+// 휴지통 저장소로 옮긴다 — 브라우저 로컬(IndexedDB)에만 있으면 그 브라우저에서만
+// 복구 가능해 다른 기기에서 삭제/복원이 어긋나는 문제가 있어 서버로 옮겼다.
 // 컨테이너 성격의 항목(시리즈/회차/캐릭터)을 지우면 그 안에 속한 하위 데이터까지
 // payload 안에 통째로 묶어 하나의 휴지통 항목으로 보관한다 — 복원 시 한 번에 되돌아오고,
 // 목록도 항목 수만큼 폭발적으로 늘어나지 않는다.
@@ -156,11 +162,6 @@ export type TrashItemType =
   | "cutAsset"
   | "galleryImage"
   | "boardImage";
-
-export interface GalleryImageTrashRecord {
-  meta: GalleryImageMeta;
-  originalBlob: Blob;
-}
 
 export interface CutTrashPayload {
   cut: Cut;
@@ -175,12 +176,12 @@ export interface BoardImageTrashPayload {
 }
 
 export interface GalleryImageTrashPayload {
-  image: GalleryImageTrashRecord;
+  image: GalleryImageMeta;
 }
 
 export interface CharacterTrashPayload {
   character: Character;
-  galleryImages: GalleryImageTrashRecord[];
+  galleryImages: GalleryImageMeta[];
 }
 
 export interface EpisodeTrashPayload {

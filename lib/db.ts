@@ -66,10 +66,13 @@ export function ensureSchema(): Promise<void> {
           original_url TEXT NOT NULL,
           original_width INTEGER NOT NULL,
           original_height INTEGER NOT NULL,
-          order_index INTEGER NOT NULL,
+          order_index BIGINT NOT NULL,
           created_at BIGINT NOT NULL
         )
       `;
+      // order_index는 Date.now() 기반 값(밀리초 타임스탬프)이라 INTEGER(최대 약 21억) 범위를
+      // 넘는다 — 초기 스키마가 INTEGER로 만들어진 적이 있어 안전하게 BIGINT로 맞춘다.
+      await sql`ALTER TABLE gallery_images ALTER COLUMN order_index TYPE BIGINT`;
       await sql`
         CREATE TABLE IF NOT EXISTS trash_entries (
           id TEXT PRIMARY KEY,

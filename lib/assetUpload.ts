@@ -61,10 +61,12 @@ export async function restoreAssetFile(targetPath: string, blob: Blob): Promise<
   }
 }
 
-/** 영구 삭제 시 더 이상 참조되지 않는 업로드 파일을 서버에서 정리한다(베스트 에포트). */
+/** 영구 삭제 시 더 이상 참조되지 않는 업로드 파일을 서버에서 정리한다(베스트 에포트).
+ *  Vercel Blob의 공개 URL(https://...)만 대상으로 한다 — data URL(구버전 데이터)이나
+ *  빈 값은 지울 파일이 없으므로 걸러낸다. */
 export async function deleteUploadedFiles(paths: (string | undefined)[]): Promise<void> {
   const targets = paths.filter(
-    (p): p is string => typeof p === "string" && p.startsWith("/uploads/")
+    (p): p is string => typeof p === "string" && /^https?:\/\//.test(p)
   );
   if (targets.length === 0) return;
 

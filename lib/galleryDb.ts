@@ -1,63 +1,10 @@
 import type { GalleryImageMeta } from "./types";
 
-// 캐릭터 참조 이미지(최대 100장, 고화질)는 localStorage 용량을 쉽게 초과하므로
-// IndexedDB에 저장한다. 목록/그리드 렌더링은 작은 썸네일만 읽는 "thumbnails" 스토어를
-// 쓰고, 라이트박스·다운로드처럼 실제로 원본이 필요할 때만 "originals" 스토어에서
-// 개별 조회한다 — 100장을 한 번에 메모리에 올리지 않기 위한 핵심 설계.
-const DB_NAME = "movingtoon-gallery";
-const DB_VERSION = 1;
-const THUMB_STORE = "thumbnails";
-const ORIGINAL_STORE = "originals";
-const CHARACTER_INDEX = "characterId";
-
+// 캐릭터 참조 이미지(최대 100장, 고화질)는 서버(Postgres 메타데이터 + Vercel Blob 파일)에
+// 저장한다 — 예전엔 브라우저 IndexedDB에만 저장해 다른 기기/브라우저에서는 안 보였는데,
+// 어디서 접속하든 똑같이 보이도록 여기서 서버 API를 거치게 바꿨다.
 export const MAX_GALLERY_IMAGES = 100;
 const THUMBNAIL_MAX_SIZE = 320;
-
-interface OriginalRecord {
-  id: string;
-  blob: Blob;
-}
-
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function openDb(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-
-  dbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(THUMB_STORE)) {
-        const store = db.createObjectStore(THUMB_STORE, { keyPath: "id" });
-        store.createIndex(CHARACTER_INDEX, "characterId", { unique: false });
-      }
-      if (!db.objectStoreNames.contains(ORIGINAL_STORE)) {
-        db.createObjectStore(ORIGINAL_STORE, { keyPath: "id" });
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-
-  return dbPromise;
-}
-
-function promisifyRequest<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function promisifyTx(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
 
 function makeId() {
   return `img-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -98,27 +45,39 @@ export async function addGalleryImages(
   characterId: string,
   files: File[]
 ): Promise<GalleryImageMeta[]> {
-  const db = await openDb();
   const created: GalleryImageMeta[] = [];
 
   for (const [i, file] of files.entries()) {
     const { blob: thumbnailBlob, originalWidth, originalHeight } = await createThumbnail(file);
-    const id = makeId();
+
+    const form = new FormData();
+    form.append("characterId", characterId);
+    form.append("file", file);
+    form.append("thumbnail", thumbnailBlob, "thumb.jpg");
+    const uploadRes = await fetch("/api/gallery-images/upload", { method: "POST", body: form });
+    if (!uploadRes.ok) throw new Error("이미지 업로드에 실패했습니다.");
+    const { fileUrl, thumbnailUrl } = (await uploadRes.json()) as {
+      fileUrl: string;
+      thumbnailUrl: string;
+    };
+
     const meta: GalleryImageMeta = {
-      id,
+      id: makeId(),
       characterId,
       fileName: file.name,
-      thumbnailBlob,
+      thumbnailUrl,
+      fileUrl,
       originalWidth,
       originalHeight,
       order: Date.now() + i,
       createdAt: Date.now(),
     };
 
-    const tx = db.transaction([THUMB_STORE, ORIGINAL_STORE], "readwrite");
-    tx.objectStore(THUMB_STORE).put(meta);
-    tx.objectStore(ORIGINAL_STORE).put({ id, blob: file } satisfies OriginalRecord);
-    await promisifyTx(tx);
+    await fetch("/api/db/gallery-images", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(meta),
+    });
 
     created.push(meta);
   }
@@ -126,57 +85,44 @@ export async function addGalleryImages(
   return created;
 }
 
-/** 휴지통 복원 전용: 새 썸네일을 만들지 않고 지웠던 레코드를 그대로 되살린다. */
-export async function restoreGalleryImage(meta: GalleryImageMeta, originalBlob: Blob): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction([THUMB_STORE, ORIGINAL_STORE], "readwrite");
-  tx.objectStore(THUMB_STORE).put(meta);
-  tx.objectStore(ORIGINAL_STORE).put({ id: meta.id, blob: originalBlob } satisfies OriginalRecord);
-  await promisifyTx(tx);
+/** 휴지통 복원 전용: 파일은 이미 Blob에 그대로 남아있으므로 메타데이터 행만 되살린다. */
+export async function restoreGalleryImage(meta: GalleryImageMeta): Promise<void> {
+  await fetch("/api/db/gallery-images", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(meta),
+  });
 }
 
 export async function listGalleryImages(characterId: string): Promise<GalleryImageMeta[]> {
-  const db = await openDb();
-  const tx = db.transaction(THUMB_STORE, "readonly");
-  const index = tx.objectStore(THUMB_STORE).index(CHARACTER_INDEX);
-  const results = await promisifyRequest(index.getAll(characterId));
-  return (results as GalleryImageMeta[]).sort((a, b) => a.order - b.order);
+  const res = await fetch(`/api/db/gallery-images?characterId=${encodeURIComponent(characterId)}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { images: GalleryImageMeta[] };
+  return data.images.sort((a, b) => a.order - b.order);
 }
 
-export async function getOriginalImageBlob(id: string): Promise<Blob | null> {
-  const db = await openDb();
-  const tx = db.transaction(ORIGINAL_STORE, "readonly");
-  const record = (await promisifyRequest(
-    tx.objectStore(ORIGINAL_STORE).get(id)
-  )) as OriginalRecord | undefined;
-  return record?.blob ?? null;
+/** 다운로드/ZIP처럼 실제 원본 바이트가 필요할 때만 원본 URL을 가져온다. */
+export async function getOriginalImageBlob(fileUrl: string): Promise<Blob | null> {
+  try {
+    const res = await fetch(fileUrl);
+    if (!res.ok) return null;
+    return await res.blob();
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteGalleryImage(id: string): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction([THUMB_STORE, ORIGINAL_STORE], "readwrite");
-  tx.objectStore(THUMB_STORE).delete(id);
-  tx.objectStore(ORIGINAL_STORE).delete(id);
-  await promisifyTx(tx);
+  await fetch(`/api/db/gallery-images/${id}`, { method: "DELETE" });
 }
 
 export async function deleteGalleryImagesForCharacter(characterId: string): Promise<void> {
-  const images = await listGalleryImages(characterId);
-  const db = await openDb();
-  const tx = db.transaction([THUMB_STORE, ORIGINAL_STORE], "readwrite");
-  for (const image of images) {
-    tx.objectStore(THUMB_STORE).delete(image.id);
-    tx.objectStore(ORIGINAL_STORE).delete(image.id);
-  }
-  await promisifyTx(tx);
+  await fetch(`/api/db/gallery-images?characterId=${encodeURIComponent(characterId)}`, {
+    method: "DELETE",
+  });
 }
 
-/** 백업 복원(덮어쓰기) 전 기존 갤러리 전체를 비운다. 이미 열린 연결을 그대로 써서
- *  indexedDB.deleteDatabase()처럼 다른 연결에 의해 블로킹될 위험이 없다. */
+/** 백업 복원(덮어쓰기) 전 기존 갤러리 메타데이터 행 전체를 비운다. */
 export async function clearAllGalleryData(): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction([THUMB_STORE, ORIGINAL_STORE], "readwrite");
-  tx.objectStore(THUMB_STORE).clear();
-  tx.objectStore(ORIGINAL_STORE).clear();
-  await promisifyTx(tx);
+  await fetch("/api/db/gallery-images", { method: "DELETE" });
 }

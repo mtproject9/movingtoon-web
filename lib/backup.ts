@@ -252,7 +252,7 @@ export async function exportBackup(
 
   for (const { characterId, images } of perCharacterImages) {
     for (const image of images) {
-      const blob = await getOriginalImageBlob(image.id);
+      const blob = await getOriginalImageBlob(image.fileUrl);
       if (blob) {
         const zipPath = `gallery/${characterId}/${image.id}__${image.fileName}`;
         zip.file(zipPath, blob);

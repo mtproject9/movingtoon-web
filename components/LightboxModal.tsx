@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, Loader2, Star, Trash2, X } from "lucide-react";
 import type { GalleryImageMeta } from "@/lib/types";
-import { getOriginalImageBlob } from "@/lib/galleryDb";
 
 export default function LightboxModal({
   images,
@@ -21,8 +20,8 @@ export default function LightboxModal({
   onDelete: (image: GalleryImageMeta) => void;
 }) {
   const [index, setIndex] = useState(startIndex);
-  const [originalUrl, setOriginalUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
   const current = images[index];
 
   useEffect(() => {
@@ -40,28 +39,13 @@ export default function LightboxModal({
   }, [images.length, index]);
 
   useEffect(() => {
-    if (!current) return;
-    let cancelled = false;
-    // 이미지 전환 시 원본을 새로 불러와야 하므로 로딩 상태를 즉시 표시한다.
+    // 이미지 전환 시 새 원본을 불러오는 동안 로딩 상태를 보여준다 — 실제 로딩
+    // 완료/실패는 <img>의 onLoad/onError가 갱신한다.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoading(true);
-
-    getOriginalImageBlob(current.id).then((blob) => {
-      if (cancelled) return;
-      setOriginalUrl(blob ? URL.createObjectURL(blob) : null);
-      setIsLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHasError(false);
   }, [current]);
-
-  useEffect(() => {
-    return () => {
-      if (originalUrl) URL.revokeObjectURL(originalUrl);
-    };
-  }, [originalUrl]);
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -122,17 +106,23 @@ export default function LightboxModal({
           <ChevronLeft className="h-6 w-6" />
         </button>
 
-        {isLoading ? (
-          <Loader2 className="h-8 w-8 animate-spin text-white/60" />
-        ) : originalUrl ? (
+        {isLoading && <Loader2 className="absolute h-8 w-8 animate-spin text-white/60" />}
+        {hasError && !isLoading && (
+          <p className="text-sm text-slate-400">이미지를 불러오지 못했습니다.</p>
+        )}
+        {!hasError && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={originalUrl}
+            key={current.id}
+            src={current.fileUrl}
             alt={current.fileName}
-            className="max-h-full max-w-full object-contain"
+            onLoad={() => setIsLoading(false)}
+            onError={() => {
+              setIsLoading(false);
+              setHasError(true);
+            }}
+            className={`max-h-full max-w-full object-contain ${isLoading ? "invisible" : ""}`}
           />
-        ) : (
-          <p className="text-sm text-slate-400">이미지를 불러오지 못했습니다.</p>
         )}
 
         <button

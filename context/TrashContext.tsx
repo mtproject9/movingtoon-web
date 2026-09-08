@@ -14,7 +14,6 @@ import type {
   EpisodeTrashPayload,
   GalleryImageMeta,
   GalleryImageTrashPayload,
-  GalleryImageTrashRecord,
   Series,
   SeriesTrashPayload,
   TrashEntry,
@@ -30,7 +29,6 @@ import {
 import {
   deleteGalleryImage,
   deleteGalleryImagesForCharacter,
-  getOriginalImageBlob,
   listGalleryImages,
   restoreGalleryImage,
 } from "@/lib/galleryDb";
@@ -147,25 +145,32 @@ function collectAssetPaths(entry: TrashEntry): (string | undefined)[] {
       ];
     }
     case "series": {
-      const { episodes } = entry.payload as SeriesTrashPayload;
-      return episodes.flatMap((ep) => [
-        ...ep.assets.flatMap((asset) => [asset.fileUrl, asset.thumbnailUrl]),
-        ...ep.board.flatMap((image) => [image.fileUrl, image.thumbnailUrl]),
-      ]);
+      const { episodes, characters } = entry.payload as SeriesTrashPayload;
+      return [
+        ...episodes.flatMap((ep) => [
+          ...ep.assets.flatMap((asset) => [asset.fileUrl, asset.thumbnailUrl]),
+          ...ep.board.flatMap((image) => [image.fileUrl, image.thumbnailUrl]),
+        ]),
+        ...characters.flatMap((cp) =>
+          cp.galleryImages.flatMap((meta) => [meta.fileUrl, meta.thumbnailUrl])
+        ),
+      ];
+    }
+    case "character": {
+      const { galleryImages } = entry.payload as CharacterTrashPayload;
+      return galleryImages.flatMap((meta) => [meta.fileUrl, meta.thumbnailUrl]);
+    }
+    case "galleryImage": {
+      const { image } = entry.payload as GalleryImageTrashPayload;
+      return [image.fileUrl, image.thumbnailUrl];
     }
     default:
       return [];
   }
 }
 
-async function collectCharacterGalleryImages(characterId: string): Promise<GalleryImageTrashRecord[]> {
-  const metas = await listGalleryImages(characterId);
-  const records: GalleryImageTrashRecord[] = [];
-  for (const meta of metas) {
-    const originalBlob = await getOriginalImageBlob(meta.id);
-    if (originalBlob) records.push({ meta, originalBlob });
-  }
-  return records;
+async function collectCharacterGalleryImages(characterId: string): Promise<GalleryImageMeta[]> {
+  return listGalleryImages(characterId);
 }
 
 interface TrashContextValue {
@@ -299,20 +304,14 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
 
   const captureGalleryImages = useCallback(
     async (images: GalleryImageMeta[]) => {
-      const trashEntries: TrashEntry[] = [];
-      for (const meta of images) {
-        const originalBlob = await getOriginalImageBlob(meta.id);
-        if (!originalBlob) continue;
-        const payload: GalleryImageTrashPayload = { image: { meta, originalBlob } };
-        trashEntries.push({
-          id: makeId("trash"),
-          itemType: "galleryImage",
-          label: meta.fileName,
-          deletedAt: Date.now(),
-          originPath: { characterId: meta.characterId },
-          payload,
-        });
-      }
+      const trashEntries: TrashEntry[] = images.map((meta) => ({
+        id: makeId("trash"),
+        itemType: "galleryImage",
+        label: meta.fileName,
+        deletedAt: Date.now(),
+        originPath: { characterId: meta.characterId },
+        payload: { image: meta } satisfies GalleryImageTrashPayload,
+      }));
       await addTrashEntries(trashEntries);
 
       for (const meta of images) {
@@ -436,14 +435,14 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
       }
       case "galleryImage": {
         const { image } = entry.payload as GalleryImageTrashPayload;
-        await restoreGalleryImage(image.meta, image.originalBlob);
+        await restoreGalleryImage(image);
         break;
       }
       case "character": {
         const { character, galleryImages } = entry.payload as CharacterTrashPayload;
         await createCharacterRow(character);
         for (const image of galleryImages) {
-          await restoreGalleryImage(image.meta, image.originalBlob);
+          await restoreGalleryImage(image);
         }
         break;
       }
@@ -468,7 +467,7 @@ export function TrashProvider({ children }: { children: React.ReactNode }) {
         for (const cp of characterPayloads) {
           await createCharacterRow(cp.character);
           for (const image of cp.galleryImages) {
-            await restoreGalleryImage(image.meta, image.originalBlob);
+            await restoreGalleryImage(image);
           }
         }
         break;

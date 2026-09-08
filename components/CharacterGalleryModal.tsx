@@ -22,7 +22,6 @@ import {
 } from "@/lib/galleryDb";
 import { useTrash } from "@/context/TrashContext";
 import { downloadBlob } from "@/lib/downloadFile";
-import { readFileAsDataUrl } from "@/lib/files";
 import LazyThumbnail from "./LazyThumbnail";
 import LightboxModal from "./LightboxModal";
 import ConfirmDialog from "./ConfirmDialog";
@@ -152,9 +151,8 @@ export default function CharacterGalleryModal({
     });
   }
 
-  async function handleSetProfile(image: GalleryImageMeta) {
-    const dataUrl = await readFileAsDataUrl(image.thumbnailBlob);
-    onSetProfileImage(dataUrl);
+  function handleSetProfile(image: GalleryImageMeta) {
+    onSetProfileImage(image.thumbnailUrl);
   }
 
   async function handleConfirmDeleteImages() {
@@ -171,7 +169,7 @@ export default function CharacterGalleryModal({
   }
 
   async function handleDownloadOne(image: GalleryImageMeta) {
-    const blob = await getOriginalImageBlob(image.id);
+    const blob = await getOriginalImageBlob(image.fileUrl);
     if (blob) downloadBlob(blob, image.fileName);
   }
 
@@ -183,7 +181,7 @@ export default function CharacterGalleryModal({
       const usedNames = new Set<string>();
 
       for (const image of targets) {
-        const blob = await getOriginalImageBlob(image.id);
+        const blob = await getOriginalImageBlob(image.fileUrl);
         if (!blob) continue;
         zip.file(uniqueFileName(usedNames, image.fileName), blob);
       }
@@ -317,7 +315,7 @@ export default function CharacterGalleryModal({
                   isSelected={selectedIds.has(image.id)}
                   onToggleSelect={() => toggleSelect(image.id)}
                   onOpen={() => setLightboxIndex(index)}
-                  onSetProfile={() => void handleSetProfile(image)}
+                  onSetProfile={() => handleSetProfile(image)}
                   onDownload={() => void handleDownloadOne(image)}
                   onDelete={() => setImagesPendingDelete([image])}
                 />
@@ -333,7 +331,7 @@ export default function CharacterGalleryModal({
           startIndex={lightboxIndex}
           onClose={() => setLightboxIndex(null)}
           onDownload={(image) => void handleDownloadOne(image)}
-          onSetProfile={(image) => void handleSetProfile(image)}
+          onSetProfile={(image) => handleSetProfile(image)}
           onDelete={(image) => setImagesPendingDelete([image])}
         />
       )}
@@ -373,7 +371,7 @@ function GalleryGridItem({
 }) {
   return (
     <div className="group relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-      <LazyThumbnail blob={image.thumbnailBlob} alt={image.fileName} className="h-full w-full" />
+      <LazyThumbnail src={image.thumbnailUrl} alt={image.fileName} className="h-full w-full" />
 
       <button
         onClick={onOpen}

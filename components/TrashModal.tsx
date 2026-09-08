@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Folder, Inbox, Loader2, Music, RotateCcw, Image as ImageIcon, Trash2, User, X, Check } from "lucide-react";
 import { useTrash } from "@/context/TrashContext";
 import { useSeries } from "@/context/SeriesContext";
@@ -35,10 +35,10 @@ const TYPE_ICON: Record<TrashItemType, typeof Folder> = {
   boardImage: ImageIcon,
 };
 
-type ThumbSource = { kind: "url"; url: string } | { kind: "blob"; blob: Blob } | { kind: "icon" };
+type ThumbSource = { kind: "url"; url: string } | { kind: "icon" };
 
-// 항목 타입별로 실제 저장된 데이터(공개 URL 또는 IndexedDB의 Blob)에서
-// 미리보기에 쓸 이미지 소스를 뽑아낸다. 없으면 타입별 대표 아이콘으로 대체.
+// 항목 타입별로 실제 저장된 공개 URL에서 미리보기에 쓸 이미지 소스를 뽑아낸다.
+// 없으면 타입별 대표 아이콘으로 대체.
 function getThumbSource(entry: TrashEntry): ThumbSource {
   switch (entry.itemType) {
     case "cutAsset": {
@@ -51,7 +51,7 @@ function getThumbSource(entry: TrashEntry): ThumbSource {
     }
     case "galleryImage": {
       const { image } = entry.payload as GalleryImageTrashPayload;
-      return { kind: "blob", blob: image.meta.thumbnailBlob };
+      return { kind: "url", url: image.thumbnailUrl };
     }
     case "character": {
       const { character } = entry.payload as CharacterTrashPayload;
@@ -62,22 +62,8 @@ function getThumbSource(entry: TrashEntry): ThumbSource {
   }
 }
 
-// blob이 null이면 애초에 호출부(TrashThumb)가 반환값을 쓰지 않으므로 리셋은 불필요.
-function useObjectUrl(blob: Blob | null): string | null {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!blob) return;
-    const objectUrl = URL.createObjectURL(blob);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [blob]);
-  return url;
-}
-
 function TrashThumb({ entry }: { entry: TrashEntry }) {
   const source = getThumbSource(entry);
-  const blobUrl = useObjectUrl(source.kind === "blob" ? source.blob : null);
   const Icon = TYPE_ICON[entry.itemType];
 
   if (source.kind === "url") {
@@ -85,17 +71,6 @@ function TrashThumb({ entry }: { entry: TrashEntry }) {
       // eslint-disable-next-line @next/next/no-img-element
       <img src={source.url} alt="" loading="lazy" className="h-full w-full object-cover" />
     );
-  }
-  if (source.kind === "blob") {
-    if (!blobUrl) {
-      return (
-        <div className="flex h-full w-full items-center justify-center">
-          <Loader2 className="h-5 w-5 animate-spin text-slate-300" />
-        </div>
-      );
-    }
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={blobUrl} alt="" loading="lazy" className="h-full w-full object-cover" />;
   }
   return (
     <div className="flex h-full w-full items-center justify-center">
