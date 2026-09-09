@@ -3,7 +3,7 @@ import { AUTH_COOKIE_NAME, expectedAuthCookieValue } from "@/lib/auth";
 
 // 개인용 도구라 APP_PASSWORD 환경변수가 설정된 경우에만 잠금이 걸린다 —
 // 로컬 개발 중 .env.local에 아직 안 넣었으면(값이 없으면) 그냥 통과시킨다.
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const expected = await expectedAuthCookieValue();
   if (!expected) return NextResponse.next();
 
