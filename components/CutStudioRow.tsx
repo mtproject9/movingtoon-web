@@ -105,8 +105,12 @@ export default function CutStudioRow({
   // 않도록).
   const [translatingField, setTranslatingField] = useState<"en" | "ko" | null>(null);
   const [translateError, setTranslateError] = useState<string | null>(null);
-  const promptEnFocusValueRef = useRef<string | null>(null);
-  const promptKoFocusValueRef = useRef<string | null>(null);
+  // 포커스 시점 값을 blur 시점 값과 비교하는 방식은, 그 사이 백그라운드 자동 번역
+  // (연출 메모 → directionNoteEn)이 끝나 resolved.promptEn/Ko가 재계산되면 사용자가
+  // 아무것도 안 쳤는데도 "값이 바뀐 것"으로 오인해 컷을 수정 상태로 굳혀버렸다.
+  // 그래서 값 비교 대신, onChange가 실제로 한 번이라도 일어났는지만 본다.
+  const promptEnDirtyRef = useRef(false);
+  const promptKoDirtyRef = useRef(false);
 
   const speaker = extractSpeakerName(cut.dialogue);
   const matchedCharacter = useMemo(
@@ -159,10 +163,10 @@ export default function CutStudioRow({
   }, [cut.directionNote, cut.directionNoteEn]);
 
   async function handleEnBlur() {
-    const focusValue = promptEnFocusValueRef.current;
-    promptEnFocusValueRef.current = null;
+    const wasDirty = promptEnDirtyRef.current;
+    promptEnDirtyRef.current = false;
     const current = resolved.promptEn.trim();
-    if (focusValue === null || focusValue === current || !current) return;
+    if (!wasDirty || !current) return;
 
     setTranslateError(null);
     setTranslatingField("en");
@@ -177,10 +181,10 @@ export default function CutStudioRow({
   }
 
   async function handleKoBlur() {
-    const focusValue = promptKoFocusValueRef.current;
-    promptKoFocusValueRef.current = null;
+    const wasDirty = promptKoDirtyRef.current;
+    promptKoDirtyRef.current = false;
     const current = resolved.promptKo.trim();
-    if (focusValue === null || focusValue === current || !current) return;
+    if (!wasDirty || !current) return;
 
     setTranslateError(null);
     setTranslatingField("ko");
@@ -290,9 +294,12 @@ export default function CutStudioRow({
           </div>
           <textarea
             value={resolved.promptEn}
-            onChange={(e) => onChangeCut({ promptEn: e.target.value })}
-            onFocus={(e) => {
-              promptEnFocusValueRef.current = e.target.value;
+            onChange={(e) => {
+              promptEnDirtyRef.current = true;
+              onChangeCut({ promptEn: e.target.value });
+            }}
+            onFocus={() => {
+              promptEnDirtyRef.current = false;
             }}
             onBlur={() => void handleEnBlur()}
             // disabled를 쓰면, 번역 중 이 칸에 포커스가 가 있을 때 브라우저가 강제로
@@ -316,9 +323,12 @@ export default function CutStudioRow({
           </div>
           <textarea
             value={resolved.promptKo}
-            onChange={(e) => onChangeCut({ promptKo: e.target.value })}
-            onFocus={(e) => {
-              promptKoFocusValueRef.current = e.target.value;
+            onChange={(e) => {
+              promptKoDirtyRef.current = true;
+              onChangeCut({ promptKo: e.target.value });
+            }}
+            onFocus={() => {
+              promptKoDirtyRef.current = false;
             }}
             onBlur={() => void handleKoBlur()}
             readOnly={translatingField !== null}
