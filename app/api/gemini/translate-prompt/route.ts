@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
+import { friendlyGeminiError } from "@/lib/geminiErrors";
 
 // 에셋 스튜디오에서 영문/한글 프롬프트 중 한쪽을 수정했을 때 다른 쪽에 반영하는
 // 번역 전용 엔드포인트. 이미지 생성(/api/generate/image)과 같은 방식으로 서버의
@@ -63,11 +64,8 @@ export async function POST(request: Request) {
       config: { temperature: 0.3 },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "알 수 없는 오류";
-    return NextResponse.json(
-      { error: `Gemini API 호출에 실패했습니다: ${message.slice(0, 300)}` },
-      { status: 502 }
-    );
+    const { message, status } = friendlyGeminiError(err);
+    return NextResponse.json({ error: message }, { status });
   }
 
   if (response.promptFeedback?.blockReason) {

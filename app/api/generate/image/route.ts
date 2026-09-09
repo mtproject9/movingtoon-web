@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
+import { friendlyGeminiError } from "@/lib/geminiErrors";
 
 // 캐릭터 시트 기반 컷 이미지 자동 생성. 공식 SDK(@google/genai)로 gemini-2.5-flash-image
 // ("나노바나나")를 호출한다. 캐릭터 참조 이미지가 있으면 텍스트 프롬프트보다 먼저
@@ -77,11 +78,8 @@ export async function POST(request: Request) {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "알 수 없는 오류";
-    return NextResponse.json(
-      { error: `Gemini API 호출에 실패했습니다: ${message.slice(0, 300)}` },
-      { status: 502 }
-    );
+    const { message, status } = friendlyGeminiError(err);
+    return NextResponse.json({ error: message }, { status });
   }
 
   if (response.promptFeedback?.blockReason) {
