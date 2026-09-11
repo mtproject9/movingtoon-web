@@ -28,7 +28,7 @@ import Toast, { type ToastState } from "@/components/Toast";
 export default function BoardPage() {
   const { seriesId, episodeId } = useParams<{ seriesId: string; episodeId: string }>();
   const { captureBoardImage } = useTrash();
-  const { addAsset } = useAssets();
+  const { addAsset, removeAsset } = useAssets();
   const { getSeries, getEpisode } = useSeries();
 
   const [images, setImages] = useState<BoardImage[]>([]);
@@ -185,6 +185,7 @@ export default function BoardPage() {
   async function handleDownload(image: BoardImage) {
     try {
       const res = await fetch(image.fileUrl);
+      if (!res.ok) throw new Error(`파일을 가져오지 못했습니다 (${res.status}).`);
       const blob = await res.blob();
       downloadBlob(blob, image.fileName);
     } catch {
@@ -201,10 +202,14 @@ export default function BoardPage() {
     try {
       const padWidth = Math.max(2, String(images.length).length);
       const zip = new JSZip();
+      let skipped = 0;
       for (let i = 0; i < images.length; i++) {
         const image = images[i];
         const res = await fetch(image.fileUrl);
-        if (!res.ok) continue;
+        if (!res.ok) {
+          skipped += 1;
+          continue;
+        }
         const blob = await res.blob();
         const tag = String(i + 1).padStart(padWidth, "0");
         zip.file(`${tag}_${image.fileName}`, blob);
@@ -218,7 +223,16 @@ export default function BoardPage() {
         "_"
       );
       downloadBlob(content, zipName);
-      setToast({ type: "success", message: `이미지 ${images.length}장을 캡컷용으로 내보냈습니다.` });
+      // 일부 이미지를 못 가져와 건너뛴 경우, 성공 토스트만 보고 전체가 다 들어간 줄
+      // 오해하지 않도록 몇 장이 빠졌는지 함께 알린다.
+      setToast(
+        skipped > 0
+          ? {
+              type: "error",
+              message: `이미지 ${images.length - skipped}장만 내보냈습니다 (${skipped}장은 파일을 가져오지 못해 제외됨).`,
+            }
+          : { type: "success", message: `이미지 ${images.length}장을 캡컷용으로 내보냈습니다.` }
+      );
     } catch {
       setToast({ type: "error", message: "캡컷 패키지를 만드는 중 오류가 발생했습니다." });
     } finally {
@@ -229,15 +243,23 @@ export default function BoardPage() {
   // "보내기"이므로 복사가 아니라 실제 이동 — 갤러리에 추가하는 동시에 보드 목록에서는
   // 뺀다. 토스트가 뜨는 시점엔 이미 화면에도(목록에서 사라짐 + 갤러리에 반영) 반영돼
   // 있어야 하므로 순서상 가장 먼저, 동기적으로 처리한다. 실제 서버 저장(persist)은
-  // 뒤에서 진행된다.
-  function handleSendToGallery(image: BoardImage) {
-    addAsset(undefined, "IMAGE", image.fileUrl, image.fileName, image.thumbnailUrl);
+  // 뒤에서 진행되는데, 만약 이게 실패하면(버전 충돌 등) persist가 서버 최신 상태로
+  // 되돌리면서 이미지가 보드에 다시 나타난다 — 그때 갤러리 쪽 사본을 롤백하지 않으면
+  // 같은 이미지가 보드와 갤러리 양쪽에 남는다. 그래서 persist 결과를 기다렸다가
+  // 실패 시 방금 만든 갤러리 자산을 지운다.
+  async function handleSendToGallery(image: BoardImage) {
+    const created = addAsset(undefined, "IMAGE", image.fileUrl, image.fileName, image.thumbnailUrl);
     const remaining = images
       .filter((img) => img.id !== image.id)
       .map((img, i) => ({ ...img, order: i }));
     setSelectedId((prev) => (prev === image.id ? remaining[0]?.id ?? null : prev));
-    void persist(remaining);
     setToast({ type: "success", message: "이미지 갤러리로 보냈습니다." });
+
+    const ok = await persist(remaining);
+    if (!ok) {
+      removeAsset(created.id);
+      setToast({ type: "error", message: "저장에 실패해 갤러리로 보내기가 취소됐습니다." });
+    }
   }
 
   async function handleConfirmDelete() {
@@ -429,7 +451,7 @@ export default function BoardPage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleSendToGallery(selected)}
+                  onClick={() => void handleSendToGallery(selected)}
                   className="flex items-center gap-1.5 rounded-full border border-indigo-200 px-3.5 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50"
                 >
                   <Images className="h-3.5 w-3.5" />

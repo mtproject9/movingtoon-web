@@ -19,18 +19,25 @@ interface EpisodeAux {
   board: BoardImage[];
 }
 
-// 시리즈/회차/캐릭터와 회차별 cuts/assets/stylePreset/board는 이제 서버(Postgres)에
-// 있으므로 localStorage 대신 이 API들을 거쳐 읽고 쓴다. 캐릭터 참조 이미지 갤러리와
-// 휴지통은 여전히 브라우저 IndexedDB에 있어 기존 로직을 그대로 쓴다.
+// 시리즈/회차/캐릭터와 회차별 cuts/assets/stylePreset/board, 캐릭터 참조 이미지
+// 갤러리, 휴지통 모두 서버(Postgres + Vercel Blob)에 있으므로 이 API들을 거쳐
+// 읽고 쓴다.
+// 이 네 함수는 전부 실패 시(응답이 !ok거나 fetch 자체가 던지면) 예외를 던진다 —
+// 예전에는 실패해도 빈 배열/무응답으로 조용히 넘어갔는데, 그러면 백업 내보내기가
+// "데이터가 원래 없었던 것"처럼 텅 빈 zip을 만들거나, 복원 도중 일부 저장이
+// 실패해도 화면엔 "복원했습니다" 성공 토스트가 뜨는 상황이 생겼다(특히 덮어쓰기
+// 복원은 기존 데이터를 먼저 지운 뒤라 실패가 곧 데이터 유실이다). 호출부
+// (exportBackup/importBackup)는 이 예외를 그대로 위로 던져, BackupRestoreControls의
+// catch가 실패를 정확히 사용자에게 알리게 한다.
 async function fetchBootstrap(): Promise<{ series: Series[]; episodes: Episode[]; characters: Character[] }> {
   const res = await fetch("/api/db/bootstrap");
-  if (!res.ok) return { series: [], episodes: [], characters: [] };
+  if (!res.ok) throw new Error(`전체 데이터를 불러오지 못했습니다 (${res.status}).`);
   return res.json();
 }
 
 async function fetchEpisodeAux(episodeId: string): Promise<EpisodeAux> {
   const res = await fetch(`/api/db/episodes/${episodeId}`);
-  if (!res.ok) return { cuts: [], assets: [], stylePreset: null, board: [] };
+  if (!res.ok) throw new Error(`회차 데이터를 불러오지 못했습니다 (${res.status}).`);
   const data = (await res.json()) as EpisodeAux;
   return {
     cuts: data.cuts ?? [],
@@ -41,19 +48,21 @@ async function fetchEpisodeAux(episodeId: string): Promise<EpisodeAux> {
 }
 
 async function postJson(url: string, body: unknown): Promise<void> {
-  await fetch(url, {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`${url} 저장에 실패했습니다 (${res.status}).`);
 }
 
 async function patchJson(url: string, body: unknown): Promise<void> {
-  await fetch(url, {
+  const res = await fetch(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(`${url} 저장에 실패했습니다 (${res.status}).`);
 }
 
 interface EpisodeBackupData {
@@ -424,7 +433,8 @@ export async function importBackup(
 
     // 시리즈를 지우면 DB 외래키 CASCADE로 회차/캐릭터까지 함께 지워진다.
     for (const series of existing.series) {
-      await fetch(`/api/db/series/${series.id}`, { method: "DELETE" });
+      const res = await fetch(`/api/db/series/${series.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`기존 데이터 삭제에 실패했습니다 (${res.status}).`);
     }
 
     for (const series of data.series) {

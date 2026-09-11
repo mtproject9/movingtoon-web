@@ -12,7 +12,17 @@ import StatusBadge from "@/components/StatusBadge";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import Toast, { type ToastState } from "@/components/Toast";
 
-const CAMERA_ANGLE_OPTIONS = ["close-up", "bust shot", "wide shot", "medium shot"];
+// lib/promptRules.ts의 EMOTION_KEYWORDS가 감정에 따라 자동으로 지정하는
+// "close-up on face"/"close-up on eyes"도 포함해야 한다 — 안 그러면 원고 분할
+// 직후 그 감정이 감지된 컷은 드롭다운에 없는 값이라 선택 표시가 어긋나 보인다.
+const CAMERA_ANGLE_OPTIONS = [
+  "close-up",
+  "close-up on face",
+  "close-up on eyes",
+  "bust shot",
+  "wide shot",
+  "medium shot",
+];
 
 export default function SplitPage() {
   const { episodeId } = useParams<{ episodeId: string }>();
@@ -51,8 +61,6 @@ export default function SplitPage() {
   }
 
   async function performSplit() {
-    console.log("[Parser Triggered]", { episodeId, scriptLength: scriptText.length });
-
     setIsSplitting(true);
     setError(null);
 
@@ -80,9 +88,6 @@ export default function SplitPage() {
       // CutsContext.setCuts는 이전 상태를 전부 덮어쓰고, selectedCutId도 첫 컷으로
       // 맞춰 오른쪽 상세 패널이 곧바로 1번 컷 내용으로 갱신되게 한다.
       setCuts(body.cuts);
-
-      console.log("[Parsed Cuts Count]", body.cuts.length);
-      console.log("[First Cut Dialogue]", body.cuts[0]?.dialogue ?? "(없음)");
 
       notify(`총 ${body.cuts.length}개 컷으로 분할되었습니다.`, "success");
     } catch (err) {

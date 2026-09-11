@@ -1,7 +1,6 @@
 import { detectEmotion } from "./promptRules";
 import type { Cut } from "./types";
 
-const MIN_CUTS_PER_SCENE = 3;
 const MAX_CUTS_PER_SCENE = 5;
 
 // 따옴표 추출은 정규식 한 방으로 훑는 대신, 여는/닫는 문자를 명시적으로 짝지어 문자열을
@@ -175,7 +174,25 @@ function classifyLine(rawLine: string): ParsedUnit[] {
 
   // 콜론이 아예 없는 순수 서술문 — 문장 단위로 쪼개 따옴표만 대사로 뽑아낸다.
   // (예: "문이 열렸다. 연수가 들어왔다. 민주가 놀랐다." → 컷 3개)
+  //
+  // 단, "씬 1. 카페 안 (오후)"처럼 지문 키워드로 시작하는 줄은 예외다 — 문장
+  // 단위 분할 기준(마침표+공백)이 "씬 1."의 마침표에도 그대로 걸려버려서, 콜론
+  // 버전("씬: 카페 안")은 한 컷으로 남는데 콜론 없는 버전만 "씬 1."과 "카페 안
+  // (오후)"로 쪼개지는 불일치가 있었다 — 지문 키워드 줄은 콜론 유무와 상관없이
+  // 항상 통째로 한 컷의 directionNote가 되도록 맞춘다.
   if (colonIndex === -1) {
+    if (DIRECTION_LABEL_PATTERN.test(line)) {
+      const { clean, notes } = extractParens(line);
+      return [
+        {
+          raw: rawLine,
+          dialogue: "",
+          directionNote: clean || line,
+          emotionOverride: "",
+          emotionSource: [...notes, clean].filter(Boolean).join(" ") || line,
+        },
+      ];
+    }
     return splitIntoSentences(line).map(parseSentenceFallback);
   }
 
@@ -370,4 +387,4 @@ export function splitScriptIntoCuts(scriptText: string): Cut[] {
   return cuts;
 }
 
-export { MIN_CUTS_PER_SCENE, MAX_CUTS_PER_SCENE };
+export { MAX_CUTS_PER_SCENE };

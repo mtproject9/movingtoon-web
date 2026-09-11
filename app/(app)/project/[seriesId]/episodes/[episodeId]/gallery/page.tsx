@@ -180,6 +180,7 @@ export default function GalleryPage() {
   async function handleDownload(asset: CutAsset) {
     try {
       const res = await fetch(asset.fileUrl);
+      if (!res.ok) throw new Error(`파일을 가져오지 못했습니다 (${res.status}).`);
       const blob = await res.blob();
       downloadBlob(blob, asset.fileName);
     } catch {

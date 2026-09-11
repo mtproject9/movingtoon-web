@@ -20,7 +20,7 @@ interface AssetsContextValue {
     // 컷에 연결된 이미지 자산이면 넘긴다(예: "Cut_01") — 갤러리/보드 어디서 봐도
     // 어느 컷의 몇 번째 버전인지 바로 보이도록 파일명을 "Cut_01_1"처럼 덮어쓴다.
     cutLabel?: string
-  ) => void;
+  ) => CutAsset;
   removeAsset: (id: string) => void;
   toggleAssetLock: (id: string) => void;
   getAssetsForCut: (cutId: string, type: AssetType) => CutAsset[];
@@ -95,6 +95,7 @@ export function AssetsProvider({
       thumbnailUrl?: string,
       cutLabel?: string
     ) => {
+      let created!: CutAsset;
       setAssets((prev) => {
         const existingVersions = prev.filter(
           (asset) => asset.cutId === cutId && asset.type === type
@@ -102,7 +103,7 @@ export function AssetsProvider({
         const version = existingVersions + 1;
         const extensionMatch = fileName.match(/\.[a-zA-Z0-9]+$/);
         const extension = extensionMatch ? extensionMatch[0] : ".png";
-        const asset: CutAsset = {
+        created = {
           id: makeId("asset"),
           cutId,
           type,
@@ -112,8 +113,9 @@ export function AssetsProvider({
           version,
           uploadedAt: Date.now(),
         };
-        return [...prev, asset];
+        return [...prev, created];
       });
+      return created;
     },
     []
   );
