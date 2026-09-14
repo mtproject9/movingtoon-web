@@ -384,6 +384,30 @@ export default function PromptsPage() {
     }
   }
 
+  // 같은 캐릭터가 다른 씬에서도 "의상: 이름 - 설명"을 완전히 같은 문구로 다시
+  // 썼고, 그 문구로 이미 이미지가 생성된 컷이 있으면 그 이미지를 찾아 돌려준다.
+  // 텍스트 설명만으로는 매번 색감·디자인이 미묘하게 달라질 수 있는데, 실제로
+  // 생성된 이미지를 참조로 같이 보내면 같은 옷차림이 훨씬 안정적으로 유지된다.
+  // 완전히 같은 문구일 때만 매칭한다 — 표현이 조금이라도 다르면 다른 옷으로
+  // 취급해, 애매한 기준으로 엉뚱한 이미지를 섞어 보내는 것보다 안전한 쪽(기본
+  // 프로필 사진만 사용)을 택한다. 원고에 쓰인 순서상 가장 먼저 생성된 것을
+  // 기준점으로 삼아, 생성할 때마다 참조가 계속 바뀌지 않게 한다.
+  function findOutfitReferenceAsset(
+    characterName: string,
+    overrideText: string,
+    excludeCutId: string
+  ): CutAsset | null {
+    const target = overrideText.trim();
+    for (const candidate of cuts) {
+      if (candidate.id === excludeCutId) continue;
+      if (candidate.characterOverrides?.[characterName]?.trim() !== target) continue;
+      const images = getAssetsForCut(candidate.id, "IMAGE");
+      if (images.length === 0) continue;
+      return images.reduce((latest, img) => (img.version > latest.version ? img : latest));
+    }
+    return null;
+  }
+
   // 컷 하나에 대해 프롬프트 + 캐릭터 참조 이미지를 Gemini에 보내 이미지를 받고, 성공하면
   // 바로 그 컷 슬롯에 업로드한다. 단일 컷 버튼과 전체 배치 생성이 이 함수를 공유한다.
   async function generateAndAssignForCut(cut: Cut) {
@@ -432,9 +456,22 @@ export default function PromptsPage() {
     const matchedCharacters = matchCutCharacters(effectiveCut, characters);
     const referenceImages = (
       await Promise.all(
-        matchedCharacters.map((character) =>
-          character.profileImage ? compressDataUrlForReference(character.profileImage) : null
-        )
+        matchedCharacters.flatMap((character) => {
+          const refs: Promise<string | null>[] = [];
+          if (character.profileImage) {
+            refs.push(compressDataUrlForReference(character.profileImage));
+          }
+          // 의상 오버라이드가 있고, 같은 문구로 이미 생성된 컷이 있으면 그 이미지도
+          // 함께 참조로 보내 옷차림 일관성을 얼굴 참조와 별개로 잡아준다.
+          const overrideText = effectiveCut.characterOverrides?.[character.name];
+          if (overrideText) {
+            const outfitAsset = findOutfitReferenceAsset(character.name, overrideText, cut.id);
+            if (outfitAsset) {
+              refs.push(compressDataUrlForReference(outfitAsset.thumbnailUrl || outfitAsset.fileUrl));
+            }
+          }
+          return refs;
+        })
       )
     ).filter((img): img is string => img !== null);
     // Gemini 이미지 생성은 Stable Diffusion류의 별도 negative_prompt 파라미터가

@@ -55,7 +55,11 @@ export async function POST(request: Request) {
   const promptText =
     referenceParts.length > 0
       ? `Use the attached character reference image(s) to keep this character's appearance ` +
-        `(hairstyle, eyes, outfit) consistent with the reference. Generate a new scene: ${prompt}`
+        `(hairstyle, eyes, outfit) consistent with the reference. If a character has more than ` +
+        `one reference image and they show different outfits, keep the face/identity consistent ` +
+        `across all of them but follow the outfit described in the text prompt below — a later ` +
+        `reference image showing a different outfit means the character changed clothes for this ` +
+        `scene. Generate a new scene: ${prompt}`
       : prompt;
 
   const aspectRatio = body.aspectRatio?.trim() || "16:9";
