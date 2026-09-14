@@ -69,7 +69,18 @@ interface ParsedUnit {
   directionNote: string;
   emotionOverride: string;
   emotionSource: string;
+  // "의상: 이름 - 설명" 줄에서만 채워진다 — 이 유닛 자체는 컷이 되지 않고, 이
+  // 시점부터 해당 캐릭터의 외형(헤어/의상/소품)을 캐릭터 시트 기본값 대신 이
+  // 설명으로 덮어쓰는 상태만 갱신한다.
+  overrideCharacterName?: string;
+  overrideText?: string;
 }
+
+// "의상: 연수 - 잠옷, 머리 풀고" 처럼 특정 캐릭터의 외형을 이 시점부터 캐릭터
+// 시트 기본값 대신 이 설명으로 그리도록 지정하는 줄. 이름과 설명은 " - "로
+// 구분한다(이름에 공백이 섞인 이인칭 호칭도 있을 수 있어 첫 "-"가 아니라
+// " - " 패턴으로 구분자를 명확히 한다).
+const CHARACTER_OVERRIDE_PATTERN = /^\[?\s*의상\s*[:：]\s*(.+?)\s+-\s+(.+?)\s*\]?$/;
 
 function splitIntoParagraphs(text: string): string[] {
   const byBlankLine = text
@@ -278,6 +289,7 @@ function paragraphToUnits(paragraph: string): ParsedUnit[] {
 
   while (i < lines.length) {
     const line = lines[i];
+    const overrideMatch = line.match(CHARACTER_OVERRIDE_PATTERN);
     const cueMatch = line.match(SPEAKER_CUE_PATTERN);
 
     // 한 줄(또는 화자 표시 줄+다음 줄)을 처리하다 예기치 못한 예외가 나도(문자열
@@ -285,6 +297,20 @@ function paragraphToUnits(paragraph: string): ParsedUnit[] {
     // 나머지 원고는 계속 분할되게 한다 — 줄 하나의 문제로 "컷으로 분할하기" 전체가
     // 먹통이 되는 일을 막는다.
     try {
+      if (overrideMatch) {
+        units.push({
+          raw: line,
+          dialogue: "",
+          directionNote: "",
+          emotionOverride: "",
+          emotionSource: "",
+          overrideCharacterName: overrideMatch[1].trim(),
+          overrideText: overrideMatch[2].trim(),
+        });
+        i += 1;
+        continue;
+      }
+
       if (cueMatch) {
         const name = cueMatch[1].trim();
         const cue = cueMatch[2].trim();
@@ -335,7 +361,12 @@ function paragraphToUnits(paragraph: string): ParsedUnit[] {
   return units;
 }
 
-function buildCut(cutNumber: number, sceneNumber: number, unit: ParsedUnit): Cut {
+function buildCut(
+  cutNumber: number,
+  sceneNumber: number,
+  unit: ParsedUnit,
+  characterOverrides: Record<string, string>
+): Cut {
   const detected = detectEmotion(unit.emotionSource);
   const emotion = unit.emotionOverride
     ? { ...detected, tag: unit.emotionOverride }
@@ -352,6 +383,8 @@ function buildCut(cutNumber: number, sceneNumber: number, unit: ParsedUnit): Cut
     expression: emotion.expression,
     directionNote: unit.directionNote,
     status: "SCRIPT_DONE",
+    characterOverrides:
+      Object.keys(characterOverrides).length > 0 ? { ...characterOverrides } : undefined,
   };
 }
 
@@ -367,6 +400,17 @@ const NON_VISUAL_LABEL_PATTERN = /^\[?\s*(효과음|내레이션|나레이션|bg
 // 빼고 장소 설명만 남긴다 — 그래야 물려받는 대사 컷들의 연출 메모가 "[씬 1] 강의실
 // 앞 복도"가 아니라 "강의실 앞 복도"처럼 자연스럽게 읽힌다.
 const SCENE_LABEL_PREFIX_PATTERN = /^\[?\s*씬\s*\d*\s*\]?\.?\s*/;
+
+// 새 씬이 시작되는지 판별한다 — 씬이 바뀌면 의상 오버라이드는 초기화해야 한다.
+// 배경(화면:)은 씬이 바뀌어도 새로 지정 안 하면 이어지는 게 자연스럽지만(같은
+// 곳에서 대화가 계속될 수 있으니), 의상은 반대다 — 한 씬에서 잠옷으로 갈아입었다고
+// 해서 다음 씬(다음날 강의실 등)까지 잠옷을 입고 있으면 안 된다. 새 옷을 안
+// 지정했으면 캐릭터 시트 기본값(평소 모습)으로 돌아가는 게 안전한 기본값이다.
+const SCENE_HEADER_PATTERN = /^\[?\s*씬\s*\d/;
+
+function isSceneHeaderUnit(unit: ParsedUnit): boolean {
+  return SCENE_HEADER_PATTERN.test(unit.raw.trim());
+}
 
 // 대사가 없고(dialogue가 비어있고) 지문 내용이 있으면서, 효과음류가 아닌 유닛은
 // "지금 화면에 뭐가 보이는지"를 설명하는 것으로 본다 — "화면:", "동작:", "[씬 N] 장소"
@@ -396,6 +440,9 @@ export function splitScriptIntoCuts(scriptText: string): Cut[] {
   let cutNumber = 1;
   let sceneNumber = 0;
   let currentBackground = "";
+  // "의상: 이름 - 설명" 줄로 갱신되는, 캐릭터 이름별 외형 오버라이드의 현재 상태.
+  // 배경과 같은 방식으로 새 오버라이드가 나올 때까지 이어진다.
+  let characterOverrides: Record<string, string> = {};
 
   for (const paragraph of paragraphs) {
     const units = paragraphToUnits(paragraph);
@@ -406,6 +453,16 @@ export function splitScriptIntoCuts(scriptText: string): Cut[] {
     for (const sceneChunk of sceneChunks) {
       sceneNumber += 1;
       for (const unit of sceneChunk) {
+        if (isSceneHeaderUnit(unit)) {
+          characterOverrides = {};
+        }
+        if (unit.overrideCharacterName) {
+          characterOverrides = {
+            ...characterOverrides,
+            [unit.overrideCharacterName]: unit.overrideText ?? "",
+          };
+          continue;
+        }
         if (isBackgroundSettingUnit(unit)) {
           currentBackground =
             unit.directionNote.replace(SCENE_LABEL_PREFIX_PATTERN, "").trim() ||
@@ -413,7 +470,7 @@ export function splitScriptIntoCuts(scriptText: string): Cut[] {
         } else if (unit.directionNote.trim() === "" && currentBackground) {
           unit.directionNote = currentBackground;
         }
-        cuts.push(buildCut(cutNumber, sceneNumber, unit));
+        cuts.push(buildCut(cutNumber, sceneNumber, unit, characterOverrides));
         cutNumber += 1;
       }
     }

@@ -403,6 +403,30 @@ export default function PromptsPage() {
       }
     }
 
+    // 캐릭터 외형 오버라이드("의상: 이름 - 설명")도 마찬가지로, 아직 번역 캐싱된
+    // 적 없는 항목만 생성 직전에 번역해둔다.
+    const pendingOverrideNames = Object.keys(effectiveCut.characterOverrides ?? {}).filter(
+      (name) => !effectiveCut.characterOverridesEn?.[name]
+    );
+    if (pendingOverrideNames.length > 0) {
+      try {
+        const translatedEntries = await Promise.all(
+          pendingOverrideNames.map(
+            async (name) =>
+              [name, await translatePrompt(effectiveCut.characterOverrides![name], "ko-to-en")] as const
+          )
+        );
+        const characterOverridesEn = {
+          ...effectiveCut.characterOverridesEn,
+          ...Object.fromEntries(translatedEntries),
+        };
+        updateCut(cut.id, { characterOverridesEn });
+        effectiveCut = { ...effectiveCut, characterOverridesEn };
+      } catch {
+        // 번역 실패 시 이번엔 오버라이드 없이(캐릭터 시트 기본 외형으로) 진행한다.
+      }
+    }
+
     // 등록된 캐릭터 전부가 아니라, 이 컷의 대사·연출 메모에 실제로 등장하는
     // 인물만 참조 이미지로 보낸다 — 안 그러면 관계없는 캐릭터 외형이 섞여 들어온다.
     const matchedCharacters = matchCutCharacters(effectiveCut, characters);

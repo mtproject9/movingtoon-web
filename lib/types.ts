@@ -31,6 +31,13 @@ export interface Cut {
   // 번역 API 호출이 필요해 동기적으로 계산할 수 없으므로 컷 저장 시 함께 캐싱해둔다.
   directionNoteEn?: string;
   status: CutStatus;
+  // 이 컷 시점에 활성화된 캐릭터별 외형 오버라이드 — 원고의 "의상: 이름 - 설명"
+  // 줄로 지정한다. 키는 캐릭터 이름, 값은 한글 설명 원문. 있으면 이미지 생성 시
+  // 그 캐릭터의 헤어/의상 태그(캐릭터 시트 기본값) 대신 이 설명을 쓴다 — 씬 중간에
+  // 옷을 갈아입는 경우처럼, 캐릭터 시트의 "평소 모습"과 다르게 그려야 할 때를 위함.
+  characterOverrides?: Record<string, string>;
+  // characterOverrides의 영문 번역 캐시. directionNoteEn과 같은 이유로 캐싱한다.
+  characterOverridesEn?: Record<string, string>;
   // 사용자가 직접 수정한 프롬프트. 없으면 에셋 스튜디오에서 스타일 프리셋 기준으로
   // 매번 새로 조합해 보여준다 (수정 즉시 여기에 저장되어 프리셋을 바꿔도 유지됨).
   promptEn?: string;

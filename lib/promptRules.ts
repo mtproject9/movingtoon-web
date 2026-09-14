@@ -124,6 +124,11 @@ export interface CutPromptInput {
   // directionNote의 번역 캐시. 없으면(아직 번역 전) 영문 프롬프트에서는 그냥
   // 비워둔다 — 번역 안 된 한글 원문을 영문 프롬프트에 그대로 흘려보내지 않기 위해.
   directionNoteEn?: string;
+  // 이 컷 시점에 활성화된 캐릭터별 외형 오버라이드(원고의 "의상: 이름 - 설명").
+  // 키는 캐릭터 이름. 있으면 그 캐릭터의 헤어/의상 태그 대신 이 설명을 쓴다.
+  characterOverrides?: Record<string, string>;
+  // characterOverrides의 번역 캐시 — directionNoteEn과 같은 이유.
+  characterOverridesEn?: Record<string, string>;
 }
 
 export interface CutPrompt {
@@ -157,12 +162,20 @@ export function buildCutPrompt(
   // 이미지 생성 모델이 그 부분을 제대로 이해하지 못한다.
   const sceneActionEn = (cut.directionNoteEn ?? "").trim();
 
+  // 이 캐릭터에 대해 "의상: 이름 - 설명"으로 지정해둔 오버라이드가 있으면, 캐릭터
+  // 시트의 헤어/의상 태그 대신 그 설명을 쓴다 — 씬 중간에 옷을 갈아입는 경우처럼
+  // "평소 모습"과 다르게 그려야 할 때를 위함. 눈동자 색(eyeTag)은 옷차림과 무관한
+  // 정체성 정보라 오버라이드 여부와 상관없이 항상 유지한다.
+  const appearanceOverrideEn = character ? cut.characterOverridesEn?.[character.name] : undefined;
+
   // 캐릭터 시트에 등록된 인물이면 일관성 유지를 위해 헤어/눈/의상 태그를 우선 사용하고,
   // 등록되지 않은 인물이면 일반적인 캐릭터 문구로 대체한다.
   const appearanceEn = character
-    ? [character.name, character.hairTag, character.eyeTag, character.outfitTag]
-        .filter(Boolean)
-        .join(", ")
+    ? appearanceOverrideEn
+      ? [character.name, character.eyeTag, appearanceOverrideEn].filter(Boolean).join(", ")
+      : [character.name, character.hairTag, character.eyeTag, character.outfitTag]
+          .filter(Boolean)
+          .join(", ")
     : speaker
       ? `${speaker}, Korean romance webtoon character`
       : "Korean romance webtoon character";
@@ -182,9 +195,14 @@ export function buildCutPrompt(
   // 대사(말풍선에 들어갈 텍스트)는 이미지 생성과 무관한 정보라 영문 쪽엔 애초에
   // 없었는데, 한글 쪽에만 맨 끝에 붙어 있어 두 프롬프트가 서로 다른 내용을
   // 담게 되는 불일치가 있었다 — 제거해 둘을 같은 내용의 번역 관계로 맞춘다.
+  // 오버라이드가 실제로 적용됐는지 한글 프롬프트에서도 바로 보이게, 원문(한글)을
+  // 그대로 노출한다 — 영문 캐시가 아직 안 됐어도(번역 전) 이 표시는 항상 뜬다.
+  const appearanceOverrideKo = character ? cut.characterOverrides?.[character.name] : undefined;
+
   const promptKo = [
     preset.descriptionKo,
     speaker,
+    appearanceOverrideKo ? `[외형: ${appearanceOverrideKo}]` : "",
     cut.emotionTag ? `[${cut.emotionTag}]` : "",
     cut.expression,
     cameraAngle ? `${cameraAngle} 구도` : "",

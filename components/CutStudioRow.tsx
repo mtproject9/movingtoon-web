@@ -162,6 +162,42 @@ export default function CutStudioRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cut.directionNote, cut.directionNoteEn]);
 
+  // 캐릭터 외형 오버라이드("의상: 이름 - 설명")도 연출 메모와 같은 이유로 화면에
+  // 보이는 즉시 미리 번역해둔다 — 안 그러면 "생성" 누르기 전까지는 영문 프롬프트에
+  // 오버라이드가 반영 안 된 것처럼 보인다.
+  const overrideTranslateAttemptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    overrideTranslateAttemptedRef.current = new Set();
+  }, [cut.id]);
+  useEffect(() => {
+    const overrides = cut.characterOverrides;
+    if (!overrides) return;
+    const pending = Object.keys(overrides).filter(
+      (name) => overrides[name]?.trim() && !cut.characterOverridesEn?.[name] && !overrideTranslateAttemptedRef.current.has(name)
+    );
+    if (pending.length === 0) return;
+    pending.forEach((name) => overrideTranslateAttemptedRef.current.add(name));
+
+    let cancelled = false;
+    const delay = Math.random() * 3000;
+    const timer = setTimeout(() => {
+      Promise.all(pending.map((name) => translatePrompt(overrides[name], "ko-to-en").then((t) => [name, t] as const)))
+        .then((entries) => {
+          if (cancelled) return;
+          onChangeCut({ characterOverridesEn: { ...cut.characterOverridesEn, ...Object.fromEntries(entries) } });
+        })
+        .catch(() => {
+          if (!cancelled) pending.forEach((name) => overrideTranslateAttemptedRef.current.delete(name));
+        });
+    }, delay);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cut.characterOverrides, cut.characterOverridesEn]);
+
   async function handleEnBlur() {
     const wasDirty = promptEnDirtyRef.current;
     promptEnDirtyRef.current = false;
