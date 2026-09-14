@@ -359,6 +359,33 @@ function buildCut(cutNumber: number, sceneNumber: number, unit: ParsedUnit): Cut
 // 전체를 실수로 붙여넣은 경우)가 파싱 시간을 과도하게 늘리지 않도록 상한을 둔다.
 const MAX_INPUT_LINES = 5000;
 
+// 효과음/내레이션/BGM은 "화면에 뭐가 보이는가"를 설명하는 게 아니라서, 배경으로
+// 물려주면 안 된다(예: "효과음: 딸랑"이 다음 대사 컷의 배경이 되면 안 됨).
+const NON_VISUAL_LABEL_PATTERN = /^\[?\s*(효과음|내레이션|나레이션|bgm)/i;
+
+// 씬 헤더("[씬 1] 강의실 앞 복도")를 배경으로 물려줄 때 "[씬 1]" 같은 라벨 부분은
+// 빼고 장소 설명만 남긴다 — 그래야 물려받는 대사 컷들의 연출 메모가 "[씬 1] 강의실
+// 앞 복도"가 아니라 "강의실 앞 복도"처럼 자연스럽게 읽힌다.
+const SCENE_LABEL_PREFIX_PATTERN = /^\[?\s*씬\s*\d*\s*\]?\.?\s*/;
+
+// 대사가 없고(dialogue가 비어있고) 지문 내용이 있으면서, 효과음류가 아닌 유닛은
+// "지금 화면에 뭐가 보이는지"를 설명하는 것으로 본다 — "화면:", "동작:", "[씬 N] 장소"
+// 전부 여기 해당한다.
+function isBackgroundSettingUnit(unit: ParsedUnit): boolean {
+  return (
+    unit.dialogue === "" &&
+    unit.directionNote.trim() !== "" &&
+    !NON_VISUAL_LABEL_PATTERN.test(unit.raw.trim())
+  );
+}
+
+// 씬 안에서 배경/장소 설명이 없는 컷(주로 대사 컷)은 가장 최근에 나온 "화면"류
+// 지문의 내용을 그대로 물려받는다 — 대사 한 줄짜리 컷마다 매번 배경을 다시 쓸
+// 필요 없이, 화면 지문 한 번으로 그 뒤 대사 컷들까지 같은 배경으로 그려지게
+// 하기 위함. 회상 컷이나 장소가 바뀌는 중간 지점처럼 새 "화면"류 지문이 다시
+// 나오면 그 시점부터는 새 내용으로 갱신된다. 문서 전체를 순서대로 훑으므로
+// 문단(빈 줄)이나 씬 경계를 넘어서도 이어진다 — 다만 새 씬은 보통 자신만의
+// "[씬 N]"/"화면:" 줄로 시작하니 자연스럽게 그 시점에 갱신된다.
 export function splitScriptIntoCuts(scriptText: string): Cut[] {
   const lines = scriptText.split("\n");
   const boundedText =
@@ -368,6 +395,7 @@ export function splitScriptIntoCuts(scriptText: string): Cut[] {
   const cuts: Cut[] = [];
   let cutNumber = 1;
   let sceneNumber = 0;
+  let currentBackground = "";
 
   for (const paragraph of paragraphs) {
     const units = paragraphToUnits(paragraph);
@@ -378,6 +406,13 @@ export function splitScriptIntoCuts(scriptText: string): Cut[] {
     for (const sceneChunk of sceneChunks) {
       sceneNumber += 1;
       for (const unit of sceneChunk) {
+        if (isBackgroundSettingUnit(unit)) {
+          currentBackground =
+            unit.directionNote.replace(SCENE_LABEL_PREFIX_PATTERN, "").trim() ||
+            unit.directionNote;
+        } else if (unit.directionNote.trim() === "" && currentBackground) {
+          unit.directionNote = currentBackground;
+        }
         cuts.push(buildCut(cutNumber, sceneNumber, unit));
         cutNumber += 1;
       }
