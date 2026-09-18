@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   BookmarkPlus,
   Check,
   CheckCircle2,
@@ -130,29 +131,43 @@ export default function CutStudioRow({
   // 즉시 백그라운드로 번역해 채워 넣는다 — "생성" 버튼을 누르기 전까지는 영문
   // 프롬프트에서 연출 메모가 통째로 빠져 있어 한글 쪽과 안 맞아 보이는 걸 막는다.
   const directionNoteTranslateAttemptedRef = useRef(false);
+  // 큐 재시도(429/503, 지수 백오프 3회)까지 전부 실패한 뒤에도 최종 실패를 화면
+  // 어디에도 표시하지 않으면, 사용자는 이 컷의 번역이 그냥 안 된 건지 아직 순서를
+  // 기다리는 중인지 구분할 방법이 없다 — 대량 회차에서 일부만 조용히 유실된 것처럼
+  // 보이는 원인이었다. 실패 상태를 남겨 배지+수동 재시도 버튼을 보여준다.
+  const [directionNoteFailed, setDirectionNoteFailed] = useState(false);
   useEffect(() => {
     directionNoteTranslateAttemptedRef.current = false;
+    setDirectionNoteFailed(false);
   }, [cut.id]);
+
+  function runDirectionNoteTranslation(note: string) {
+    directionNoteTranslateAttemptedRef.current = true;
+    setDirectionNoteFailed(false);
+    return translatePrompt(note, "ko-to-en")
+      .then((translated) => {
+        onChangeCut({ directionNoteEn: translated });
+      })
+      .catch(() => {
+        // 자동 재시도(큐 안에서 429/503을 지수 백오프로 3번까지)까지 다 써도
+        // 실패한 경우다 — attemptedRef는 true로 남겨 자동 재시도 루프에 다시
+        // 들어가지 않게 하고, 실패 배지의 "다시 시도" 버튼으로만 재시도한다.
+        setDirectionNoteFailed(true);
+      });
+  }
+
   useEffect(() => {
     const note = cut.directionNote.trim();
     if (!note || cut.directionNoteEn !== undefined || directionNoteTranslateAttemptedRef.current) {
       return;
     }
-    directionNoteTranslateAttemptedRef.current = true;
 
     let cancelled = false;
     // 컷이 많은 회차를 열면 수십 개 행이 한꺼번에 마운트되므로, 그대로 두면 번역
     // API가 순간적으로 몰려 호출된다 — 살짝 흩어서(0~3초 사이 무작위 지연) 부담을 준다.
     const delay = Math.random() * 3000;
     const timer = setTimeout(() => {
-      translatePrompt(note, "ko-to-en")
-        .then((translated) => {
-          if (!cancelled) onChangeCut({ directionNoteEn: translated });
-        })
-        .catch(() => {
-          // 실패하면 다음에 이 컷이 다시 보일 때 재시도할 수 있게 플래그를 풀어준다.
-          if (!cancelled) directionNoteTranslateAttemptedRef.current = false;
-        });
+      if (!cancelled) void runDirectionNoteTranslation(note);
     }, delay);
 
     return () => {
@@ -166,9 +181,39 @@ export default function CutStudioRow({
   // 보이는 즉시 미리 번역해둔다 — 안 그러면 "생성" 누르기 전까지는 영문 프롬프트에
   // 오버라이드가 반영 안 된 것처럼 보인다.
   const overrideTranslateAttemptedRef = useRef<Set<string>>(new Set());
+  const [failedOverrideNames, setFailedOverrideNames] = useState<Set<string>>(new Set());
   useEffect(() => {
     overrideTranslateAttemptedRef.current = new Set();
+    setFailedOverrideNames(new Set());
   }, [cut.id]);
+
+  function runOverrideTranslation(overrides: Record<string, string>, names: string[]) {
+    names.forEach((name) => overrideTranslateAttemptedRef.current.add(name));
+    setFailedOverrideNames((prev) => {
+      const next = new Set(prev);
+      names.forEach((name) => next.delete(name));
+      return next;
+    });
+    // 한 캐릭터 번역이 실패해도 나머지 캐릭터까지 같이 실패 처리되지 않도록
+    // Promise.all 대신 allSettled로 각자 독립적으로 성공/실패를 가른다.
+    return Promise.allSettled(
+      names.map((name) => translatePrompt(overrides[name], "ko-to-en").then((t) => [name, t] as const))
+    ).then((results) => {
+      const succeeded: (readonly [string, string])[] = [];
+      const failed: string[] = [];
+      results.forEach((result, i) => {
+        if (result.status === "fulfilled") succeeded.push(result.value);
+        else failed.push(names[i]);
+      });
+      if (succeeded.length > 0) {
+        onChangeCut({ characterOverridesEn: { ...cut.characterOverridesEn, ...Object.fromEntries(succeeded) } });
+      }
+      if (failed.length > 0) {
+        setFailedOverrideNames((prev) => new Set([...prev, ...failed]));
+      }
+    });
+  }
+
   useEffect(() => {
     const overrides = cut.characterOverrides;
     if (!overrides) return;
@@ -176,19 +221,11 @@ export default function CutStudioRow({
       (name) => overrides[name]?.trim() && !cut.characterOverridesEn?.[name] && !overrideTranslateAttemptedRef.current.has(name)
     );
     if (pending.length === 0) return;
-    pending.forEach((name) => overrideTranslateAttemptedRef.current.add(name));
 
     let cancelled = false;
     const delay = Math.random() * 3000;
     const timer = setTimeout(() => {
-      Promise.all(pending.map((name) => translatePrompt(overrides[name], "ko-to-en").then((t) => [name, t] as const)))
-        .then((entries) => {
-          if (cancelled) return;
-          onChangeCut({ characterOverridesEn: { ...cut.characterOverridesEn, ...Object.fromEntries(entries) } });
-        })
-        .catch(() => {
-          if (!cancelled) pending.forEach((name) => overrideTranslateAttemptedRef.current.delete(name));
-        });
+      if (!cancelled) void runOverrideTranslation(overrides, pending);
     }, delay);
 
     return () => {
@@ -328,6 +365,32 @@ export default function CutStudioRow({
             </span>
             <FieldCopyButton text={resolved.promptEn} />
           </div>
+          {directionNoteFailed && cut.directionNoteEn === undefined && (
+            <div className="flex items-center gap-1.5 rounded-lg bg-red-50 px-2 py-1 text-[11px] text-red-600">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              연출 메모 번역 실패 — 지금은 반영 안 됨
+              <button
+                onClick={() => void runDirectionNoteTranslation(cut.directionNote.trim())}
+                className="ml-auto rounded-full border border-red-200 px-2 py-0.5 font-medium hover:bg-red-100"
+              >
+                다시 시도
+              </button>
+            </div>
+          )}
+          {failedOverrideNames.size > 0 && (
+            <div className="flex items-center gap-1.5 rounded-lg bg-red-50 px-2 py-1 text-[11px] text-red-600">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              의상 오버라이드 번역 실패: {[...failedOverrideNames].join(", ")}
+              <button
+                onClick={() =>
+                  void runOverrideTranslation(cut.characterOverrides ?? {}, [...failedOverrideNames])
+                }
+                className="ml-auto rounded-full border border-red-200 px-2 py-0.5 font-medium hover:bg-red-100"
+              >
+                다시 시도
+              </button>
+            </div>
+          )}
           <textarea
             value={resolved.promptEn}
             onChange={(e) => {
