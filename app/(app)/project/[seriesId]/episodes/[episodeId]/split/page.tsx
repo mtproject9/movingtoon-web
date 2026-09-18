@@ -113,7 +113,7 @@ export default function SplitPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="grid h-full min-h-0 flex-1 grid-cols-1 gap-6 p-6 lg:grid-cols-2">
-        <section className="flex min-h-0 flex-col gap-3">
+        <section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
           <div>
             <h1 className="text-lg font-semibold text-slate-800">원고 자동 분할</h1>
             <p className="mt-1 text-sm text-slate-500">
@@ -125,7 +125,7 @@ export default function SplitPage() {
             value={scriptText}
             onChange={(e) => setScriptText(e.target.value)}
             placeholder="여기에 원고를 붙여넣어 주세요..."
-            className="min-h-[300px] flex-1 resize-none rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 shadow-sm focus:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-100"
+            className="min-h-[120px] flex-1 resize-none rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 shadow-sm focus:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-100"
           />
 
           {error && (
