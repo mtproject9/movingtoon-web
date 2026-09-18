@@ -49,11 +49,17 @@ export async function compressImageToDataUrl(
  * Gemini 참조 이미지로 보내기 전에 축소한다. 외형 참고용이라 원본 화질이 필요 없고,
  * 작을수록 요청이 가볍고 빠르다.
  */
-export async function compressDataUrlForReference(dataUrl: string): Promise<string | null> {
+export async function compressDataUrlForReference(
+  dataUrl: string,
+  options: CompressImageOptions = { maxDimension: 512, quality: 0.8 }
+): Promise<string | null> {
   if (!dataUrl) return null;
   try {
-    const blob = await fetch(dataUrl).then((res) => res.blob());
-    return await compressImageToDataUrl(blob, { maxDimension: 512, quality: 0.8 });
+    const blob = await fetch(dataUrl).then((res) => {
+      if (!res.ok) throw new Error(`이미지를 불러오지 못했습니다 (${res.status})`);
+      return res.blob();
+    });
+    return await compressImageToDataUrl(blob, options);
   } catch {
     return null;
   }

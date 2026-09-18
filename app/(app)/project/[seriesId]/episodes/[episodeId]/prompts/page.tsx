@@ -83,9 +83,20 @@ export default function PromptsPage() {
   function getCharacterGalleryImages(characterId: string): Promise<GalleryImageMeta[]> {
     const cached = galleryCacheRef.current.get(characterId);
     if (cached) return cached;
-    const promise = listGalleryImages(characterId);
+    // 갤러리 조회가 실패해도 컷 생성 자체는 막지 않는다 — 프로필 사진만으로 진행.
+    const promise = listGalleryImages(characterId).catch(() => [] as GalleryImageMeta[]);
     galleryCacheRef.current.set(characterId, promise);
     return promise;
+  }
+
+  // 갤러리 참조 이미지는 320px 썸네일이 아니라 원본을 받아 1024px로 줄여 보낸다 —
+  // 옷 무늬·단추 같은 디테일이 참조의 핵심이라 너무 작으면 의미가 없다. 원본을 못
+  // 불러오면 썸네일로 대체한다.
+  async function compressGalleryReference(image: GalleryImageMeta): Promise<string | null> {
+    return (
+      (await compressDataUrlForReference(image.fileUrl, { maxDimension: 1024, quality: 0.85 })) ??
+      (await compressDataUrlForReference(image.thumbnailUrl))
+    );
   }
 
   const customPresets = useMemo(() => series?.customStylePresets ?? [], [series]);
@@ -433,15 +444,19 @@ export default function PromptsPage() {
     return b.includes(a) || a.includes(b);
   }
 
-  // 골든셋에서 이 컷의 표정/의상에 맞는 이미지를 최대 한 장씩 골라온다. "정체성"
-  // 카테고리는 여기서 다루지 않는다 — 캐릭터 시트의 profileImage가 이미 그 역할을
-  // 하고 있어(항상 첨부), 중복으로 더 보내면 참조 이미지만 늘어나 요청이 무거워진다.
+  // 골든셋에서 참조로 붙일 이미지를 고른다: "정체성" 앵커(컷과 무관하게 항상,
+  // 프로필 사진과 같은 이미지는 제외) + 이 컷의 의상/표정에 맞는 것 한 장씩.
+  // 요청 본문 크기(서버리스 4.5MB 제한)를 지키려고 앵커는 여러 인물이 나오는
+  // 컷에서는 2장, 한 명만 나오면 3장까지만 쓴다.
   function pickGalleryReferenceImages(
     images: GalleryImageMeta[],
     cut: Cut,
-    character: CharacterAppearance
+    character: CharacterAppearance,
+    maxIdentityAnchors: number
   ): GalleryImageMeta[] {
-    const picked: GalleryImageMeta[] = [];
+    const picked: GalleryImageMeta[] = images
+      .filter((img) => img.category === "identity" && img.thumbnailUrl !== character.profileImage)
+      .slice(0, maxIdentityAnchors);
 
     const outfitContext = (cut.characterOverrides?.[character.name] || character.outfitTag).trim();
     if (outfitContext) {
@@ -511,8 +526,18 @@ export default function PromptsPage() {
     const referenceImageGroups = await Promise.all(
       matchedCharacters.map(async (character) => {
         const refs: (string | null)[] = [];
+        const galleryImages = character.id ? await getCharacterGalleryImages(character.id) : [];
+
+        // 프로필 사진이 갤러리에서 "대표로 지정"한 이미지면 그건 320px 썸네일이라,
+        // 같은 갤러리 이미지의 원본으로 바꿔 보낸다.
         if (character.profileImage) {
-          refs.push(await compressDataUrlForReference(character.profileImage));
+          const profileSource = galleryImages.find(
+            (img) => img.thumbnailUrl === character.profileImage
+          );
+          refs.push(
+            (profileSource ? await compressGalleryReference(profileSource) : null) ??
+              (await compressDataUrlForReference(character.profileImage))
+          );
         }
 
         // 의상 오버라이드가 있고, 같은 문구로 이미 생성된 컷이 있으면 그 이미지도
@@ -530,12 +555,16 @@ export default function PromptsPage() {
         // 골든셋(캐릭터별 참조 이미지 라이브러리)에서 이 컷의 표정/의상 태그에
         // 맞는 이미지가 있으면 추가로 첨부한다. 의상은 위에서 이미 실제 생성된
         // 컷을 참조로 확보했으면 중복으로 보내지 않는다.
-        if (character.id) {
-          const galleryImages = await getCharacterGalleryImages(character.id);
-          const picked = pickGalleryReferenceImages(galleryImages, effectiveCut, character);
+        if (galleryImages.length > 0) {
+          const picked = pickGalleryReferenceImages(
+            galleryImages,
+            effectiveCut,
+            character,
+            matchedCharacters.length > 1 ? 2 : 3
+          );
           for (const image of picked) {
             if (image.category === "outfit" && outfitAlreadyReferenced) continue;
-            refs.push(await compressDataUrlForReference(image.thumbnailUrl || image.fileUrl));
+            refs.push(await compressGalleryReference(image));
           }
         }
 
