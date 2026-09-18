@@ -140,6 +140,11 @@ export interface BoardImage {
 // 캐릭터 참조 이미지(최대 100장)는 서버(Postgres 메타데이터 + Vercel Blob 파일)에
 // 저장한다. 브라우저 로컬(IndexedDB)에만 있으면 다른 기기/브라우저에서는 안 보이는
 // 문제가 있어, 어디서 접속하든 똑같이 보이도록 서버로 옮겼다(lib/galleryDb.ts).
+// 골든셋 참조 이미지 분류. "identity"는 얼굴/기본 정체성(항상 첨부 후보),
+// "expression"은 특정 표정(감정선 지문에 맞는 컷에만), "outfit"은 특정
+// 의상/소품(그 옷을 입은 컷에만) — 컷 생성 시 이 값으로 골라 붙인다.
+export type GalleryImageCategory = "identity" | "expression" | "outfit";
+
 export interface GalleryImageMeta {
   id: string;
   characterId: string;
@@ -152,6 +157,10 @@ export interface GalleryImageMeta {
   originalHeight: number;
   order: number;
   createdAt: number;
+  // 기존(태그 기능 이전) 이미지와의 호환을 위해 기본값은 "identity"·빈 라벨.
+  category: GalleryImageCategory;
+  // 자유 텍스트: "정면", "웃음", "잠옷" 등 — category 안에서 구체적으로 뭔지.
+  label: string;
 }
 
 // ── 휴지통(soft delete) ──────────────────────────────────────────────

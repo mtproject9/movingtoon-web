@@ -138,6 +138,9 @@ export interface CutPrompt {
 }
 
 export interface CharacterAppearance {
+  // 골든셋(캐릭터별 참조 이미지 라이브러리)을 조회할 때만 쓴다 — 프롬프트 텍스트
+  // 조합에는 관여하지 않는다.
+  id?: string;
   name: string;
   hairTag: string;
   eyeTag: string;

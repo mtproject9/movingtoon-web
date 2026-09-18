@@ -1,4 +1,4 @@
-import type { GalleryImageMeta } from "./types";
+import type { GalleryImageCategory, GalleryImageMeta } from "./types";
 
 // 캐릭터 참조 이미지(최대 100장, 고화질)는 서버(Postgres 메타데이터 + Vercel Blob 파일)에
 // 저장한다 — 예전엔 브라우저 IndexedDB에만 저장해 다른 기기/브라우저에서는 안 보였는데,
@@ -71,6 +71,8 @@ export async function addGalleryImages(
       originalHeight,
       order: Date.now() + i,
       createdAt: Date.now(),
+      category: "identity",
+      label: "",
     };
 
     await fetch("/api/db/gallery-images", {
@@ -114,6 +116,18 @@ export async function getOriginalImageBlob(fileUrl: string): Promise<Blob | null
 
 export async function deleteGalleryImage(id: string): Promise<void> {
   await fetch(`/api/db/gallery-images/${id}`, { method: "DELETE" });
+}
+
+/** 골든셋 이미지의 카테고리(정체성/표정/의상)·라벨 태그를 수정한다. */
+export async function updateGalleryImageTag(
+  id: string,
+  patch: { category?: GalleryImageCategory; label?: string }
+): Promise<void> {
+  await fetch(`/api/db/gallery-images/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 }
 
 export async function deleteGalleryImagesForCharacter(characterId: string): Promise<void> {

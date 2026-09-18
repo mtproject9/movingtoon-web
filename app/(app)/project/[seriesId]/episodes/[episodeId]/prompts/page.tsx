@@ -27,7 +27,8 @@ import {
   type CharacterAppearance,
 } from "@/lib/promptRules";
 import { formatCutLabel, formatEpisodeLabel } from "@/lib/types";
-import type { Cut, CutAsset, CutStatus, StylePreset } from "@/lib/types";
+import type { Cut, CutAsset, CutStatus, GalleryImageMeta, StylePreset } from "@/lib/types";
+import { listGalleryImages } from "@/lib/galleryDb";
 import { downloadBlob } from "@/lib/downloadFile";
 import { base64ToFile, compressDataUrlForReference, createThumbnailBlob } from "@/lib/images";
 import { uploadCutAsset } from "@/lib/assetUpload";
@@ -75,6 +76,18 @@ export default function PromptsPage() {
   const { captureCutAsset } = useTrash();
 
   const series = getSeries(seriesId);
+  // 캐릭터별 골든셋(참조 이미지 라이브러리)은 컷 하나 생성할 때마다 매번 새로
+  // 불러올 필요 없다 — 같은 캐릭터가 여러 컷에 반복 등장하는 일괄 생성 중엔
+  // 첫 조회 결과를 재사용해 API 요청 수를 줄인다.
+  const galleryCacheRef = useRef<Map<string, Promise<GalleryImageMeta[]>>>(new Map());
+  function getCharacterGalleryImages(characterId: string): Promise<GalleryImageMeta[]> {
+    const cached = galleryCacheRef.current.get(characterId);
+    if (cached) return cached;
+    const promise = listGalleryImages(characterId);
+    galleryCacheRef.current.set(characterId, promise);
+    return promise;
+  }
+
   const customPresets = useMemo(() => series?.customStylePresets ?? [], [series]);
   const allPresetIds = useMemo(
     () => [...STYLE_PRESETS, ...customPresets].map((preset) => preset.id),
@@ -147,6 +160,7 @@ export default function PromptsPage() {
   const characters: CharacterAppearance[] = useMemo(
     () =>
       getCharactersForSeries(seriesId).map((character) => ({
+        id: character.id,
         name: character.name,
         hairTag: character.hairTag,
         eyeTag: character.eyeTag,
@@ -408,6 +422,46 @@ export default function PromptsPage() {
     return null;
   }
 
+  // 자유 텍스트 라벨과 이 컷의 맥락(감정/의상 텍스트)이 서로 관련 있는지를, 정교한
+  // 매칭 없이 부분 문자열 포함 관계로 판단한다 — 라벨 쪽이 더 구체적일 수도
+  // (haystack에 label이 포함) 맥락 쪽이 더 구체적일 수도(label에 haystack이 포함)
+  // 있어 양방향으로 검사한다.
+  function labelMatches(label: string, haystack: string): boolean {
+    const a = label.trim();
+    const b = haystack.trim();
+    if (!a || !b) return false;
+    return b.includes(a) || a.includes(b);
+  }
+
+  // 골든셋에서 이 컷의 표정/의상에 맞는 이미지를 최대 한 장씩 골라온다. "정체성"
+  // 카테고리는 여기서 다루지 않는다 — 캐릭터 시트의 profileImage가 이미 그 역할을
+  // 하고 있어(항상 첨부), 중복으로 더 보내면 참조 이미지만 늘어나 요청이 무거워진다.
+  function pickGalleryReferenceImages(
+    images: GalleryImageMeta[],
+    cut: Cut,
+    character: CharacterAppearance
+  ): GalleryImageMeta[] {
+    const picked: GalleryImageMeta[] = [];
+
+    const outfitContext = (cut.characterOverrides?.[character.name] || character.outfitTag).trim();
+    if (outfitContext) {
+      const outfitMatch = images.find(
+        (img) => img.category === "outfit" && labelMatches(img.label, outfitContext)
+      );
+      if (outfitMatch) picked.push(outfitMatch);
+    }
+
+    const expressionContext = `${cut.emotionTag} ${cut.expression}`.trim();
+    if (expressionContext) {
+      const expressionMatch = images.find(
+        (img) => img.category === "expression" && labelMatches(img.label, expressionContext)
+      );
+      if (expressionMatch) picked.push(expressionMatch);
+    }
+
+    return picked;
+  }
+
   // 컷 하나에 대해 프롬프트 + 캐릭터 참조 이미지를 Gemini에 보내 이미지를 받고, 성공하면
   // 바로 그 컷 슬롯에 업로드한다. 단일 컷 버튼과 전체 배치 생성이 이 함수를 공유한다.
   async function generateAndAssignForCut(cut: Cut) {
@@ -454,26 +508,43 @@ export default function PromptsPage() {
     // 등록된 캐릭터 전부가 아니라, 이 컷의 대사·연출 메모에 실제로 등장하는
     // 인물만 참조 이미지로 보낸다 — 안 그러면 관계없는 캐릭터 외형이 섞여 들어온다.
     const matchedCharacters = matchCutCharacters(effectiveCut, characters);
-    const referenceImages = (
-      await Promise.all(
-        matchedCharacters.flatMap((character) => {
-          const refs: Promise<string | null>[] = [];
-          if (character.profileImage) {
-            refs.push(compressDataUrlForReference(character.profileImage));
+    const referenceImageGroups = await Promise.all(
+      matchedCharacters.map(async (character) => {
+        const refs: (string | null)[] = [];
+        if (character.profileImage) {
+          refs.push(await compressDataUrlForReference(character.profileImage));
+        }
+
+        // 의상 오버라이드가 있고, 같은 문구로 이미 생성된 컷이 있으면 그 이미지도
+        // 함께 참조로 보내 옷차림 일관성을 얼굴 참조와 별개로 잡아준다.
+        const overrideText = effectiveCut.characterOverrides?.[character.name];
+        let outfitAlreadyReferenced = false;
+        if (overrideText) {
+          const outfitAsset = findOutfitReferenceAsset(character.name, overrideText, cut.id);
+          if (outfitAsset) {
+            refs.push(await compressDataUrlForReference(outfitAsset.thumbnailUrl || outfitAsset.fileUrl));
+            outfitAlreadyReferenced = true;
           }
-          // 의상 오버라이드가 있고, 같은 문구로 이미 생성된 컷이 있으면 그 이미지도
-          // 함께 참조로 보내 옷차림 일관성을 얼굴 참조와 별개로 잡아준다.
-          const overrideText = effectiveCut.characterOverrides?.[character.name];
-          if (overrideText) {
-            const outfitAsset = findOutfitReferenceAsset(character.name, overrideText, cut.id);
-            if (outfitAsset) {
-              refs.push(compressDataUrlForReference(outfitAsset.thumbnailUrl || outfitAsset.fileUrl));
-            }
+        }
+
+        // 골든셋(캐릭터별 참조 이미지 라이브러리)에서 이 컷의 표정/의상 태그에
+        // 맞는 이미지가 있으면 추가로 첨부한다. 의상은 위에서 이미 실제 생성된
+        // 컷을 참조로 확보했으면 중복으로 보내지 않는다.
+        if (character.id) {
+          const galleryImages = await getCharacterGalleryImages(character.id);
+          const picked = pickGalleryReferenceImages(galleryImages, effectiveCut, character);
+          for (const image of picked) {
+            if (image.category === "outfit" && outfitAlreadyReferenced) continue;
+            refs.push(await compressDataUrlForReference(image.thumbnailUrl || image.fileUrl));
           }
-          return refs;
-        })
-      )
-    ).filter((img): img is string => img !== null);
+        }
+
+        return refs;
+      })
+    );
+    const referenceImages = referenceImageGroups
+      .flat()
+      .filter((img): img is string => img !== null);
     // Gemini 이미지 생성은 Stable Diffusion류의 별도 negative_prompt 파라미터가
     // 없어서, 프롬프트 문장 끝에 "피해야 할 요소"로 자연스럽게 이어붙인다.
     const prompt = `${resolveCutPrompt(effectiveCut, presetId, characters, customPresets).promptEn}. Avoid: ${DEFAULT_NEGATIVE_PROMPT}.`;

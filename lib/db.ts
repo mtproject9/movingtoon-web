@@ -73,6 +73,11 @@ export function ensureSchema(): Promise<void> {
       // order_index는 Date.now() 기반 값(밀리초 타임스탬프)이라 INTEGER(최대 약 21억) 범위를
       // 넘는다 — 초기 스키마가 INTEGER로 만들어진 적이 있어 안전하게 BIGINT로 맞춘다.
       await sql`ALTER TABLE gallery_images ALTER COLUMN order_index TYPE BIGINT`;
+      // 골든셋(참조 이미지 라이브러리) 태그 — 어떤 이미지가 정체성/표정/의상 중 뭘
+      // 보여주는지, 그리고 그 안에서 구체적으로 뭔지(예: "웃음", "잠옷")를 표시한다.
+      // 컷 생성 시 이 태그로 그 컷 감정/의상에 맞는 참조 이미지를 골라 첨부한다.
+      await sql`ALTER TABLE gallery_images ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'identity'`;
+      await sql`ALTER TABLE gallery_images ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''`;
       await sql`
         CREATE TABLE IF NOT EXISTS trash_entries (
           id TEXT PRIMARY KEY,

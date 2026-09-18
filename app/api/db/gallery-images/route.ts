@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSchema, sql } from "@/lib/db";
-import type { GalleryImageMeta } from "@/lib/types";
+import type { GalleryImageCategory, GalleryImageMeta } from "@/lib/types";
 
 function rowToMeta(r: Record<string, unknown>): GalleryImageMeta {
   return {
@@ -13,6 +13,8 @@ function rowToMeta(r: Record<string, unknown>): GalleryImageMeta {
     originalHeight: r.original_height as number,
     order: Number(r.order_index),
     createdAt: Number(r.created_at),
+    category: (r.category as GalleryImageCategory) || "identity",
+    label: (r.label as string) || "",
   };
 }
 
@@ -38,10 +40,11 @@ export async function POST(request: Request) {
   await sql`
     INSERT INTO gallery_images (
       id, character_id, file_name, thumbnail_url, original_url,
-      original_width, original_height, order_index, created_at
+      original_width, original_height, order_index, created_at, category, label
     ) VALUES (
       ${body.id}, ${body.characterId}, ${body.fileName}, ${body.thumbnailUrl}, ${body.fileUrl},
-      ${body.originalWidth}, ${body.originalHeight}, ${body.order}, ${body.createdAt}
+      ${body.originalWidth}, ${body.originalHeight}, ${body.order}, ${body.createdAt},
+      ${body.category || "identity"}, ${body.label || ""}
     )
     ON CONFLICT (id) DO NOTHING
   `;

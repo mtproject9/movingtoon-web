@@ -13,13 +13,20 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import type { Character, GalleryImageMeta } from "@/lib/types";
+import type { Character, GalleryImageCategory, GalleryImageMeta } from "@/lib/types";
 import {
   MAX_GALLERY_IMAGES,
   addGalleryImages,
   getOriginalImageBlob,
   listGalleryImages,
+  updateGalleryImageTag,
 } from "@/lib/galleryDb";
+
+const CATEGORY_LABELS: Record<GalleryImageCategory, string> = {
+  identity: "정체성",
+  expression: "표정",
+  outfit: "의상",
+};
 import { useTrash } from "@/context/TrashContext";
 import { downloadBlob } from "@/lib/downloadFile";
 import LazyThumbnail from "./LazyThumbnail";
@@ -153,6 +160,13 @@ export default function CharacterGalleryModal({
 
   function handleSetProfile(image: GalleryImageMeta) {
     onSetProfileImage(image.thumbnailUrl);
+  }
+
+  // 태그(카테고리/라벨)는 컷 생성 시 "이 컷 감정/의상에 맞는 참조 이미지"를 고르는
+  // 데 쓰인다 — 낙관적으로 화면부터 바꾸고 서버에 반영한다.
+  function handleUpdateTag(id: string, patch: { category?: GalleryImageCategory; label?: string }) {
+    setImages((prev) => prev.map((img) => (img.id === id ? { ...img, ...patch } : img)));
+    void updateGalleryImageTag(id, patch);
   }
 
   async function handleConfirmDeleteImages() {
@@ -318,6 +332,7 @@ export default function CharacterGalleryModal({
                   onSetProfile={() => handleSetProfile(image)}
                   onDownload={() => void handleDownloadOne(image)}
                   onDelete={() => setImagesPendingDelete([image])}
+                  onUpdateTag={(patch) => handleUpdateTag(image.id, patch)}
                 />
               ))}
             </div>
@@ -360,6 +375,7 @@ function GalleryGridItem({
   onSetProfile,
   onDownload,
   onDelete,
+  onUpdateTag,
 }: {
   image: GalleryImageMeta;
   isSelected: boolean;
@@ -368,62 +384,97 @@ function GalleryGridItem({
   onSetProfile: () => void;
   onDownload: () => void;
   onDelete: () => void;
+  onUpdateTag: (patch: { category?: GalleryImageCategory; label?: string }) => void;
 }) {
+  const [labelDraft, setLabelDraft] = useState(image.label);
+  useEffect(() => setLabelDraft(image.label), [image.label]);
+
   return (
-    <div className="group relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-      <LazyThumbnail src={image.thumbnailUrl} alt={image.fileName} className="h-full w-full" />
+    <div className="flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+      <div className="group relative aspect-square overflow-hidden">
+        <LazyThumbnail src={image.thumbnailUrl} alt={image.fileName} className="h-full w-full" />
 
-      <button
-        onClick={onOpen}
-        aria-label={`${image.fileName} 확대 보기`}
-        className="absolute inset-0"
-      />
+        <button
+          onClick={onOpen}
+          aria-label={`${image.fileName} 확대 보기`}
+          className="absolute inset-0"
+        />
 
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleSelect();
-        }}
-        className={`absolute left-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded border transition-opacity ${
-          isSelected
-            ? "border-rose-400 bg-rose-500 text-white opacity-100"
-            : "border-white/80 bg-black/30 text-transparent opacity-0 group-hover:opacity-100"
-        }`}
-      >
-        <Check className="h-3.5 w-3.5" />
-      </button>
-
-      <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-end gap-1 bg-gradient-to-t from-black/60 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onSetProfile();
+            onToggleSelect();
           }}
-          title="대표 프로필 이미지로 지정"
-          className="rounded-full bg-white/90 p-1 text-slate-600 hover:text-amber-500"
+          className={`absolute left-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded border transition-opacity ${
+            isSelected
+              ? "border-rose-400 bg-rose-500 text-white opacity-100"
+              : "border-white/80 bg-black/30 text-transparent opacity-0 group-hover:opacity-100"
+          }`}
         >
-          <Star className="h-3.5 w-3.5" />
+          <Check className="h-3.5 w-3.5" />
         </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDownload();
+
+        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-end gap-1 bg-gradient-to-t from-black/60 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSetProfile();
+            }}
+            title="대표 프로필 이미지로 지정"
+            className="rounded-full bg-white/90 p-1 text-slate-600 hover:text-amber-500"
+          >
+            <Star className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDownload();
+            }}
+            title="다운로드"
+            className="rounded-full bg-white/90 p-1 text-slate-600 hover:text-rose-500"
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            title="삭제"
+            className="rounded-full bg-white/90 p-1 text-slate-600 hover:text-red-500"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* 골든셋 태그: 컷 생성 시 이 카테고리/라벨로 그 컷 감정·의상에 맞는 참조
+          이미지를 자동으로 골라 첨부한다(prompts/page.tsx의 pickGalleryReferenceImages). */}
+      <div className="flex flex-col gap-1 p-1.5">
+        <select
+          value={image.category}
+          onChange={(e) => onUpdateTag({ category: e.target.value as GalleryImageCategory })}
+          className="w-full rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-600"
+        >
+          {(Object.entries(CATEGORY_LABELS) as [GalleryImageCategory, string][]).map(
+            ([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            )
+          )}
+        </select>
+        <input
+          value={labelDraft}
+          onChange={(e) => setLabelDraft(e.target.value)}
+          onBlur={() => {
+            if (labelDraft !== image.label) onUpdateTag({ label: labelDraft });
           }}
-          title="다운로드"
-          className="rounded-full bg-white/90 p-1 text-slate-600 hover:text-rose-500"
-        >
-          <Download className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          title="삭제"
-          className="rounded-full bg-white/90 p-1 text-slate-600 hover:text-red-500"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+          placeholder={
+            image.category === "expression" ? "예: 웃음" : image.category === "outfit" ? "예: 잠옷" : "예: 정면"
+          }
+          className="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px] text-slate-600 placeholder:text-slate-300"
+        />
       </div>
     </div>
   );
